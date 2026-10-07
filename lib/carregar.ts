@@ -9,13 +9,21 @@ async function streamParaBuffer(stream: ReadableStream<Uint8Array>): Promise<Buf
   return Buffer.from(await new Response(stream).arrayBuffer());
 }
 
+/** O token pode ter prefixo próprio quando o store é conectado com outro nome (ex.: MEUSTORE_READ_WRITE_TOKEN). */
+function acharToken(): string | undefined {
+  if (process.env.BLOB_READ_WRITE_TOKEN) return process.env.BLOB_READ_WRITE_TOKEN;
+  const chave = Object.keys(process.env).find((k) => k.endsWith("_READ_WRITE_TOKEN") && process.env[k]);
+  return chave ? process.env[chave] : undefined;
+}
+
 /** Lê do Vercel Blob (store privado ou público). Sem token, cai no arquivo local de desenvolvimento. */
 async function lerArquivo(): Promise<{ buf: Buffer; atualizadoEm: string | null; fonte: "blob" | "local" }> {
-  if (process.env.BLOB_READ_WRITE_TOKEN) {
+  const token = acharToken();
+  if (token) {
     let ultimoErro: unknown;
     for (const access of ["private", "public"] as const) {
       try {
-        const r = await get(ARQUIVO_BLOB, { access, useCache: false });
+        const r = await get(ARQUIVO_BLOB, { access, token, useCache: false });
         if (r && r.statusCode === 200) {
           return {
             buf: await streamParaBuffer(r.stream),
@@ -38,8 +46,9 @@ async function lerArquivo(): Promise<{ buf: Buffer; atualizadoEm: string | null;
     return { buf, atualizadoEm: st.mtime.toISOString(), fonte: "local" };
   } catch {
     throw new Error(
-      `BLOB_READ_WRITE_TOKEN não configurado e não existe data/${ARQUIVO_BLOB}. ` +
-        "Conecte o Blob store ao projeto na Vercel e envie a planilha como controle-estoque.xlsx."
+      `Token do Blob não encontrado (nenhuma variável terminada em _READ_WRITE_TOKEN) e não existe data/${ARQUIVO_BLOB}. ` +
+        `Variáveis visíveis ao app que parecem do Blob: [${Object.keys(process.env).filter((k) => /BLOB|TOKEN|STORE/i.test(k)).join(", ") || "nenhuma"}]. ` +
+        "Conecte o Blob store ao projeto na Vercel (Production), faça redeploy e envie a planilha como controle-estoque.xlsx."
     );
   }
 }
