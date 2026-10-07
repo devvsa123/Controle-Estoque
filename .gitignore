@@ -1,0 +1,8 @@
+node_modules
+.next
+.env*.local
+.vercel
+next-env.d.ts
+*.tsbuildinfo
+# planilha real do estoque (dados internos) - usada só para desenvolvimento local
+data/*.xlsx
