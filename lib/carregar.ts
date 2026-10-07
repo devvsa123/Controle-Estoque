@@ -18,8 +18,9 @@ function acharToken(): string | undefined {
 
 /** Lê do Vercel Blob (store privado ou público). Sem token, cai no arquivo local de desenvolvimento. */
 async function lerArquivo(): Promise<{ buf: Buffer; atualizadoEm: string | null; fonte: "blob" | "local" }> {
+  // Com o store conectado por OIDC não há token fixo: o SDK usa BLOB_STORE_ID + VERCEL_OIDC_TOKEN sozinho.
   const token = acharToken();
-  if (token) {
+  if (token || process.env.BLOB_STORE_ID) {
     let ultimoErro: unknown;
     for (const access of ["private", "public"] as const) {
       try {
@@ -46,7 +47,7 @@ async function lerArquivo(): Promise<{ buf: Buffer; atualizadoEm: string | null;
     return { buf, atualizadoEm: st.mtime.toISOString(), fonte: "local" };
   } catch {
     throw new Error(
-      `Token do Blob não encontrado (nenhuma variável terminada em _READ_WRITE_TOKEN) e não existe data/${ARQUIVO_BLOB}. ` +
+      `Nem token nem BLOB_STORE_ID do Blob foram encontrados e não existe data/${ARQUIVO_BLOB}. ` +
         `Variáveis visíveis ao app que parecem do Blob: [${Object.keys(process.env).filter((k) => /BLOB|TOKEN|STORE/i.test(k)).join(", ") || "nenhuma"}]. ` +
         "Conecte o Blob store ao projeto na Vercel (Production), faça redeploy e envie a planilha como controle-estoque.xlsx."
     );
