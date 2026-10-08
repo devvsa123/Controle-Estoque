@@ -97,3 +97,8 @@ tr.sub table { background: transparent; }
   .wrap { padding: 12px; }
   .hbar { grid-template-columns: 52px 1fr 90px; }
 }
+.modnav { max-width: 1280px; margin: 0 auto; padding: 16px 16px 0; }
+input[type=number] { padding: 7px 9px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
+.hbar.wide { grid-template-columns: 64px 1fr 200px; }
+.hbar .val { white-space: nowrap; }

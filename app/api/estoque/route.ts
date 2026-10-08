@@ -1,15 +1,14 @@
-import { NextResponse } from "next/server";
 import { carregarDados } from "@/lib/carregar";
+import { jsonGzip } from "@/lib/gzip";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 export async function GET() {
   try {
-    const dados = await carregarDados();
-    return NextResponse.json(dados, { headers: { "Cache-Control": "no-store" } });
+    return jsonGzip(await carregarDados());
   } catch (e) {
     const msg = e instanceof Error ? e.message : "Erro desconhecido";
-    return NextResponse.json({ erro: msg }, { status: 500 });
+    return jsonGzip({ erro: msg }, 500);
   }
 }

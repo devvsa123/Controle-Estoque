@@ -6,3 +6,4 @@ next-env.d.ts
 *.tsbuildinfo
 # planilha real do estoque (dados internos) - usada só para desenvolvimento local
 data/*.xlsx
+data/*.xls
