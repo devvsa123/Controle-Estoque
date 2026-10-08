@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { Dados, Escopo, Linha } from "@/lib/types";
+import AnaliseRM from "@/components/AnaliseRM";
 import { NOME_AREA, NOME_DEPOSITO } from "@/lib/config";
 import { cmpVariante, csv, diasAte, fmtData, fmtDataHora, fmtNum, norm } from "@/lib/util";
 
@@ -50,12 +51,10 @@ function somar(a: Agregado, l: Linha) {
 }
 
 export default function Page() {
+  const [modulo, setModulo] = useState<"estoque" | "rm">("estoque");
   const [dados, setDados] = useState<Dados | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [carregando, setCarregando] = useState(true);
-  const [escopo, setEscopo] = useState<Escopo>("estoque");
-  const [aba, setAba] = useState<Aba>("resumo");
-  const [f, setF] = useState<Filtros>(FILTROS_INICIAIS);
 
   async function carregar() {
     setCarregando(true);
@@ -74,6 +73,30 @@ export default function Page() {
   useEffect(() => {
     carregar();
   }, []);
+
+  return (
+    <>
+      <nav className="modnav">
+        <div className="seg" role="group" aria-label="Módulo">
+          <button aria-pressed={modulo === "estoque"} onClick={() => setModulo("estoque")}>Estoque</button>
+          <button aria-pressed={modulo === "rm"} onClick={() => setModulo("rm")}>Análise de RM</button>
+        </div>
+      </nav>
+      {modulo === "estoque" ? (
+        <EstoqueView dados={dados} erro={erro} carregando={carregando} carregar={carregar} />
+      ) : (
+        <div className="wrap" style={{ paddingTop: 12 }}>
+          <AnaliseRM estoque={dados} />
+        </div>
+      )}
+    </>
+  );
+}
+
+function EstoqueView({ dados, erro, carregando, carregar }: { dados: Dados | null; erro: string | null; carregando: boolean; carregar: () => void }) {
+  const [escopo, setEscopo] = useState<Escopo>("estoque");
+  const [aba, setAba] = useState<Aba>("resumo");
+  const [f, setF] = useState<Filtros>(FILTROS_INICIAIS);
 
   const hoje = useMemo(() => new Date(), []);
 
