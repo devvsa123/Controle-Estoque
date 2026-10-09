@@ -113,7 +113,8 @@ const REGRAS: Record<TipoMissao, string[]> = {
   movimentacao: [
     "Objetivo: 1 PI por LOC FR, com 1 a 5 caixas (calçado 1 a 3). O sistema define sozinho a LOC \"casa\" de cada PI com o menor esforço: mantém onde o PI já está sozinho e move o mínimo.",
     "Juntar: o PI espalhado vai para a sua casa. Desmisturar: em LOC com mais de um PI, fica o dono da LOC e os outros vão para a casa deles. O que passa do máximo volta para o SC.",
-    "Onda 1 pode ser feita já; onda 2 só depois que a onda 1 liberar a LOC de destino. Trocas entre duas LOCs vêm marcadas para fazer juntas.",
+    "Tudo que volta do FR para o SC é sempre em CAIXAS FECHADAS (múltiplo da quantidade padrão por caixa, CXP). Unidades soltas, menos de 1 caixa, nunca voltam ao SC: seguem para a LOC do PI, e se ela passar do máximo, ela devolve uma caixa fechada.",
+    "Onda 1 pode ser feita já; onda 2 só depois que a onda 1 liberar a LOC de destino (ou trouxer o saldo de onde sai a devolução). Trocas entre duas LOCs vêm marcadas para fazer juntas.",
     "Faltou LOC? PIs de menor saída vão para a zona de baixo giro (rua 01 do P02); sem espaço nem lá, o saldo volta ao SC e aparece um alerta. Ficam de fora o P04 e a rua 12 do P02.",
   ],
 };
@@ -358,7 +359,7 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
           <table>
             <thead>
               <tr>
-                <th>Onda</th><th>Prio.</th><th>Missão</th><th>PI</th><th className="n">{tipo === "recompletamento" ? "Caixas" : "Quantidade"}</th><th>De</th><th>Para</th>
+                <th>Onda</th><th>Prio.</th><th>Missão</th><th>PI</th><th className="n">{tipo === "recompletamento" ? "Caixas" : "Qtd (caixas se SC)"}</th><th>De</th><th>Para</th>
                 <th>Status</th><th>Responsável</th><th>Observação</th>
               </tr>
             </thead>
@@ -395,7 +396,7 @@ function MissaoLinha({ m, tipo, aberto, onToggle, onAlterar }: { m: Missao; tipo
         <td><span className={`tag ${PRIO[m.prioridade].tom}`}>{PRIO[m.prioridade].nome}</span></td>
         <td>{aberto ? "▾" : "▸"} {m.id}{m.origem === "manual" && <span className="tag neutral" style={{ marginLeft: 4 }}>manual</span>}</td>
         <td className="wrapc"><strong>{m.pi}</strong> {m.desc}{m.freq && m.freq !== "—" && <div className="muted small">{m.freq}{m.qtdMediaPedido ? ` · média ${fmtNum(m.qtdMediaPedido)} un/pedido` : ""}</div>}</td>
-        <td className="n">{tipo === "recompletamento" && m.caixas ? <>{fmtNum(m.caixas)} cx <span className="muted small">({fmtNum(m.qtd)} un)</span></> : `${fmtNum(m.qtd)} un`}</td>
+        <td className="n">{m.caixas ? <>{fmtNum(m.caixas)} cx <span className="muted small">({fmtNum(m.qtd)} un)</span></> : `${fmtNum(m.qtd)} un`}</td>
         <td title={NOME_DEPOSITO[m.de.dep]}>{loc(m.de)}</td>
         <td title={NOME_DEPOSITO[m.para.dep]}>{loc(m.para)}</td>
         <td onClick={(e) => e.stopPropagation()}>

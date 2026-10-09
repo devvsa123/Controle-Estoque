@@ -160,7 +160,7 @@ export function conformidade(ctx: Contexto): Conformidade {
     if (itens.size > 1) { c.maisDeUmPi++; ok = false; }
     for (const pi of ativos) {
       const lim = ctx.limites(pi)!, it = itens.get(pi)!;
-      if (it.qtd > lim.maxUn + EPS) { c.acimaDoMaximo++; ok = false; }
+      if (Math.floor(it.qtd / lim.cxp + EPS) > lim.maxCx) { c.acimaDoMaximo++; ok = false; }
       if (it.qtd < lim.minUn - EPS && itens.size === 1) { c.abaixoDoMinimo++; ok = false; }
     }
     if (ok) c.conformes++;
@@ -261,7 +261,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     scUsadas.add(k); scDoPi.set(pi, k);
     return k;
   };
-  const podeDevolverSc = (pi: string) => locsScDoPi(pi).length > 0 || params.locsVaziasSc.some((v) => !ocupadasSc.has(chaveLoc(v)) && !scUsadas.has(chaveLoc(v))) || scDoPi.has(pi);
+  const podeDevolverSc = (pi: string) => !!ctx.dem.get(pi)?.cxp && (locsScDoPi(pi).length > 0 || params.locsVaziasSc.some((v) => !ocupadasSc.has(chaveLoc(v)) && !scUsadas.has(chaveLoc(v))) || scDoPi.has(pi));
 
   // ---- 2) quem ainda não tem casa: LOC livre de menor custo; senão, zona de baixo giro
   const preferDep = (pi: string) => {
@@ -343,16 +343,20 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     return ehZona(locDe(k)) ? Math.min(lim.maxUn, params.caixasZona * lim.cxp) : lim.maxUn;
   };
 
-  const devolver = (pi: string, k: string, qtd: number, motivo: string, prioridade: 1 | 2 | 3) => {
-    const lim = ctx.limites(pi);
-    const dep = locDe(k).dep;
-    const sc = destinoSc(pi, dep);
-    if (!sc) { semDestinoSc.push(`${nome(pi)} (${fmt(qtd)} un em ${k.replace("|", " ")})`); return false; }
-    // devolve caixas inteiras quando a caixa é conhecida
-    const q = lim ? Math.min(qtd, Math.ceil(qtd / lim.cxp - EPS) * lim.cxp) : qtd;
-    propostas.push(novaProposta("movimentacao", pi, locDe(k), locDe(sc), Math.min(q, sim.get(k)!.get(pi)!.qtd), prioridade, motivo,
-      { chave: `A|${pi}|${k}|SC:${sc}` }));
-    sairSim(sim, k, pi, Math.min(q, sim.get(k)!.get(pi)!.qtd));
+  const semCxp: string[] = [], soltas: string[] = [];
+  /** FR → SC: SEMPRE em caixas fechadas (múltiplo da CXP). O que sobra solto (menos de 1 caixa) não volta. Devolve true se criou a missão. */
+  const devolver = (pi: string, k: string, qtd: number, motivo: string, prioridade: 1 | 2 | 3): boolean => {
+    const cxp = ctx.dem.get(pi)?.cxp;
+    const loc = k.replace("|", " ");
+    if (!cxp) { semCxp.push(`${nome(pi)} (${fmt(qtd)} un em ${loc})`); return false; }
+    const disponivel = sim.get(k)?.get(pi)?.qtd ?? 0;
+    const caixas = Math.floor(Math.min(qtd, disponivel) / cxp + EPS);
+    if (caixas <= 0) { soltas.push(`${nome(pi)} (${fmt(Math.min(qtd, disponivel))} un soltas, menos de 1 caixa de ${fmt(cxp)}, em ${loc})`); return false; }
+    const sc = destinoSc(pi, locDe(k).dep);
+    if (!sc) { semDestinoSc.push(`${nome(pi)} (${caixas} caixa(s) em ${loc})`); return false; }
+    const q = caixas * cxp;
+    propostas.push(novaProposta("movimentacao", pi, locDe(k), locDe(sc), q, prioridade, motivo, { chave: `A|${pi}|${k}|SC:${sc}`, caixas }));
+    sairSim(sim, k, pi, q);
     return true;
   };
 
@@ -376,29 +380,39 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
       }
       if (movivel <= EPS) { bloqueios.push(`${nome(pi)} na LOC ${k.replace("|", " ")}`); continue; }
       const room = Math.max(0, limFr(pi, alvo) - qtdSim(sim, alvo, pi));
-      const q = Math.min(movivel, room);
+      let q = Math.min(movivel, room);
+      // o que não cabe na casa: caixas inteiras voltam ao SC; a sobra solta (menos de 1 caixa) vai junto para a casa
+      const resto = movivel - q;
+      const cxp = ctx.dem.get(pi)?.cxp ?? 0;
+      if (resto > EPS && cxp) {
+        const cx = Math.floor(resto / cxp + EPS);
+        if (cx > 0) devolver(pi, k, cx * cxp, `Excedente além do máximo da LOC ${locDe(alvo).end}: devolver ${cx} caixa(s) ao SC`, 3);
+        const soltaFinal = Math.max(0, (sim.get(k)?.get(pi)?.qtd ?? 0) - (it.bloq ?? 0) - q);
+        // menos de 1 caixa: segue para a casa; se a casa passar do máximo em caixas inteiras, ela devolve uma caixa fechada ao SC
+        if (soltaFinal > EPS && soltaFinal < cxp - EPS) q += soltaFinal;
+        else if (soltaFinal >= cxp - EPS) soltas.push(`${nome(pi)} (${fmt(soltaFinal)} un em ${k.replace("|", " ")} sem destino no SC)`);
+      } else if (resto > EPS) semCxp.push(`${nome(pi)} (${fmt(resto)} un em ${k.replace("|", " ")})`);
       if (q > EPS) {
         propostas.push(novaProposta("movimentacao", pi, locDe(k), locDe(alvo), q, 2,
-          zona === ehZona(locDe(alvo)) || !ehZona(locDe(alvo)) ? `Juntar o PI na sua LOC ${locDe(alvo).end} (1 PI por LOC)` : `Levar para a zona de baixo giro (${locDe(alvo).end}): falta LOC própria`,
+          !ehZona(locDe(alvo)) ? `Juntar o PI na sua LOC ${locDe(alvo).end} (1 PI por LOC)` : `Levar para a zona de baixo giro (${locDe(alvo).end}): falta LOC própria`,
           { chave: `A|${pi}|${k}|${alvo}` }));
         sairSim(sim, k, pi, q); entrarSim(sim, alvo, pi, q);
       }
-      const resto = movivel - q;
-      if (resto > EPS) devolver(pi, k, resto, `Excedente além do máximo da LOC ${locDe(alvo).end}: devolver ao SC`, 3);
     }
   }
-  // excedente nas casas/zona
+  // excedente nas casas/zona: o máximo vale em CAIXAS INTEIRAS (unidades soltas, menos de 1 caixa, são uma caixa aberta e não contam)
   for (const pi of [...ativos]) {
     const alvo = casaDe.get(pi) ?? zonaDe.get(pi);
     if (!alvo) continue;
     const lim = ctx.limites(pi)!;
-    const cap = limFr(pi, alvo);
+    const maxCx = Math.floor(limFr(pi, alvo) / lim.cxp + EPS);
     const q = qtdSim(sim, alvo, pi);
-    if (q > cap + EPS) {
+    const inteiras = Math.floor(q / lim.cxp + EPS);
+    if (inteiras > maxCx) {
       const it = sim.get(alvo)!.get(pi)!;
       const movivel = Math.min(it.qtd - it.bloq, Math.max(0, q - lim.minUn));
-      const excesso = Math.min(movivel, Math.ceil((q - cap) / lim.cxp - EPS) * lim.cxp);
-      if (excesso > EPS) devolver(pi, alvo, excesso, `Acima do máximo de ${fmt(cap / lim.cxp)} caixa(s) na LOC ${locDe(alvo).end}: devolver o excedente ao SC`, 3);
+      const dev = Math.min(inteiras - maxCx, Math.floor(movivel / lim.cxp + EPS));
+      if (dev > 0) devolver(pi, alvo, dev * lim.cxp, `Acima do máximo de ${maxCx} caixa(s) na LOC ${locDe(alvo).end}: devolver ${dev} caixa(s) ao SC`, 3);
     }
   }
 
@@ -454,6 +468,12 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     }
   }
 
+  // saída de uma LOC que recebe o mesmo PI por outra missão (juntar e depois devolver caixa fechada): só depois da chegada
+  for (const p of propostas) {
+    if (p.tipo !== "movimentacao") continue;
+    if (propostas.some((q) => q !== p && q.pi === p.pi && chaveLoc(q.para) === chaveLoc(p.de))) p.onda = 2;
+  }
+
   const alertas: Alerta[] = [];
   const mk = (id: string, nivel: Alerta["nivel"], regra: string, titulo: string, detalhe: string, lista: string[], tipo: TipoMissao) => {
     if (lista.length) alertas.push({ id, nivel, regra, titulo, detalhe, tipo, total: lista.length, exemplos: lista.slice(0, 8) });
@@ -461,6 +481,8 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   mk("rc-sem-origem", "critico", "Recompletamento precisa de caixas fechadas em SC", "FR abaixo do mínimo sem caixa fechada livre em SC", "Não há caixa fechada livre em SC para repor (o saldo pode estar bloqueado ou fracionado).", semOrigem, "recompletamento");
   mk("rc-parcial", "atencao", "Recompletamento cobre a meta", "SC não cobre toda a reposição necessária", "Há caixas em SC, mas não o bastante para atingir a meta.", parcial, "recompletamento");
   mk("mv-sem-destino-sc", "atencao", "Excedente volta para o SC", "Sem LOC SC para devolver o excedente", "O PI não tem LOC SC e não há LOC SC vazia informada. Informe LOCs SC vazias em Parâmetros.", semDestinoSc, "movimentacao");
+  mk("mv-sem-cxp", "atencao", "FR → SC em caixas fechadas", "Sem caixa padrão (CXP) para devolver ao SC", "A devolução ao SC só é feita em caixas fechadas, e este PI não tem CXP conhecida (nenhum pedido na planilha de pedidos).", semCxp, "movimentacao");
+  mk("mv-soltas", "info", "FR → SC em caixas fechadas", "Sobra solta (menos de 1 caixa) não volta ao SC", "Só caixas fechadas voltam ao SC; unidades soltas menores que 1 caixa permanecem na LOC.", soltas, "movimentacao");
   mk("mv-bloqueio", "atencao", "1 PI por LOC", "Saldo bloqueado impede esvaziar a LOC", "O PI tem saldo bloqueado nesta LOC: resolva o bloqueio antes de movimentar.", bloqueios, "movimentacao");
   mk("mv-sem-lugar", "critico", "Todo PI fracionado precisa de uma LOC",
     `Faltou LOC até na zona de baixo giro: ${semLugar.length} PI(s) sem lugar`,
@@ -492,36 +514,45 @@ export function verificarMissoes(ms: Missao[], ctx: Contexto): Map<string, Verif
   const tol = 1e-6;
   const ordenadas = [...ms].sort((a, b) => (a.id < b.id ? -1 : 1));
   const livre = (pi: string, l: Local) => ctx.livreLoc.get(`${pi}|${chaveLoc(l)}`) ?? 0;
+  // pontas "misturadas": a LOC recebe (ou envia) o mesmo PI por outra missão, então a variação líquida não prova nada sozinha
+  const recebe = new Set(ordenadas.map((m) => `${m.pi}|${chaveLoc(m.para)}`));
+  const envia = new Set(ordenadas.filter((m) => m.tipo === "movimentacao").map((m) => `${m.pi}|${chaveLoc(m.de)}`));
 
-  // 1) saída da origem (só movimentação: no recompletamento a paleta de SC pode ser outra)
+  // 1) saída da origem (só movimentação; no recompletamento a paleta de SC pode ser outra). Sem prova se a origem também recebe.
   const porOrigem = new Map<string, Missao[]>();
   for (const m of ordenadas) if (m.tipo === "movimentacao") (porOrigem.get(`${m.pi}|${chaveLoc(m.de)}`) ?? porOrigem.set(`${m.pi}|${chaveLoc(m.de)}`, []).get(`${m.pi}|${chaveLoc(m.de)}`)!).push(m);
   const origDone = new Map<string, boolean>(), origParcial = new Map<string, number>();
-  for (const g of porOrigem.values()) {
+  for (const [k, g] of porOrigem) {
+    if (recebe.has(k)) continue; // origem misturada: a prova vem do destino
     let disp = Math.max(0, Math.max(...g.map((m) => m.baseOrigem ?? 0)) - livre(g[0].pi, g[0].de));
     for (const m of g) {
       if (disp >= m.qtd - tol) { origDone.set(m.id, true); disp -= m.qtd; }
       else { if (disp > tol) origParcial.set(m.id, disp); disp = 0; }
     }
   }
+  const origemComProva = (m: Missao) => m.tipo === "movimentacao" && !recebe.has(`${m.pi}|${chaveLoc(m.de)}`);
 
-  // 2) chegada ao destino
+  // 2) chegada ao destino (sem prova se o destino também envia o mesmo PI)
   const porDestino = new Map<string, Missao[]>();
   for (const m of ordenadas) (porDestino.get(`${m.pi}|${chaveLoc(m.para)}`) ?? porDestino.set(`${m.pi}|${chaveLoc(m.para)}`, []).get(`${m.pi}|${chaveLoc(m.para)}`)!).push(m);
-  for (const g of porDestino.values()) {
+  for (const [k, g] of porDestino) {
+    const destinoComProva = !envia.has(k);
+    // destino misturado: confia na saída da origem (quando há prova)
+    if (!destinoComProva) {
+      for (const m of g) if (origDone.get(m.id)) out.set(m.id, { estado: "concluida", nota: "Confirmada pela saída da origem (o destino também enviou o mesmo PI, então a chegada não se isola)." });
+      continue;
+    }
     let chegou = Math.max(0, livre(g[0].pi, g[0].para) - Math.min(...g.map((m) => m.baseDestino ?? 0)));
-    const movs = g.filter((m) => m.tipo === "movimentacao" && origDone.get(m.id));
-    for (const m of movs) {
+    for (const m of g.filter((x) => x.tipo === "movimentacao" && origDone.get(x.id))) {
       if (chegou >= m.qtd - tol) { out.set(m.id, { estado: "concluida", nota: "Confirmada pela planilha: saiu da origem e chegou ao destino." }); chegou -= m.qtd; }
       else if (chegou > tol) { out.set(m.id, { estado: "divergente", nota: `Saiu da origem, mas só ${fmt(chegou)} de ${fmt(m.qtd)} un apareceram no destino.` }); chegou = 0; }
       else out.set(m.id, { estado: "divergente", nota: "Saiu da origem mas não apareceu no destino: confira o endereço ou se o item foi perdido." });
     }
-    for (const m of g.filter((x) => x.tipo === "recompletamento")) {
-      if (chegou >= m.qtd - tol) { out.set(m.id, { estado: "concluida", nota: "Confirmada: o FR recebeu a quantidade (a paleta de SC pode ter sido outra)." }); chegou -= m.qtd; }
-      else if (chegou > tol) { out.set(m.id, { estado: "parcial", restante: m.qtd - chegou, nota: `Parcial: chegaram ${fmt(chegou)} un ao FR; faltam ${fmt(m.qtd - chegou)}.` }); chegou = 0; }
+    for (const m of g.filter((x) => x.tipo === "recompletamento" || (x.tipo === "movimentacao" && !origemComProva(x)))) {
+      if (chegou >= m.qtd - tol) { out.set(m.id, { estado: "concluida", nota: m.tipo === "recompletamento" ? "Confirmada: o FR recebeu a quantidade (a paleta de SC pode ter sido outra)." : "Confirmada pela chegada ao destino." }); chegou -= m.qtd; }
+      else if (chegou > tol) { out.set(m.id, { estado: "parcial", restante: m.qtd - chegou, nota: `Parcial: chegaram ${fmt(chegou)} un; faltam ${fmt(m.qtd - chegou)}.` }); chegou = 0; }
     }
-    // movimentações cuja saída ainda não foi comprovada: pode haver chegada sem saída (outra origem) => sobra de `chegou`
-    for (const m of g.filter((x) => x.tipo === "movimentacao" && !origDone.get(x.id))) {
+    for (const m of g.filter((x) => x.tipo === "movimentacao" && origemComProva(x) && !origDone.get(x.id))) {
       const parc = origParcial.get(m.id) ?? 0;
       if (parc > tol) out.set(m.id, { estado: "parcial", restante: m.qtd - parc, nota: `Parcial: saíram ${fmt(parc)} un da origem; faltam ${fmt(m.qtd - parc)}.` });
     }
@@ -529,8 +560,9 @@ export function verificarMissoes(ms: Missao[], ctx: Contexto): Map<string, Verif
   // 3) sem nenhuma evidência
   for (const m of ordenadas) {
     if (out.has(m.id)) continue;
+    const aguardaChegada = m.tipo === "movimentacao" && recebe.has(`${m.pi}|${chaveLoc(m.de)}`); // a origem recebe o PI de outra missão: ainda pode não ter saldo
     const orig = livre(m.pi, m.de);
-    if (m.tipo === "movimentacao" && orig < m.qtd - tol) out.set(m.id, { estado: "obsoleta", nota: "Origem sem saldo livre suficiente (mudou por outro motivo)." });
+    if (!aguardaChegada && m.tipo === "movimentacao" && orig < m.qtd - tol) out.set(m.id, { estado: "obsoleta", nota: "Origem sem saldo livre suficiente (mudou por outro motivo)." });
     else if (m.tipo === "recompletamento" && (ctx.livrePorId.get(m.idQuant) ?? 0) < m.qtd - tol && !ctx.linhasSc.get(m.pi)?.some((l) => l.disp >= m.qtd - tol)) out.set(m.id, { estado: "obsoleta", nota: "Não há mais caixas fechadas livres em SC para esta missão." });
     else out.set(m.id, { estado: "pendente", nota: "" });
   }
@@ -614,13 +646,14 @@ export function alertasDoEstado(ctx: Contexto, missoes: Missao[], conf: Conformi
     const kO = `${m.pi}|${chaveLoc(m.de)}|${m.idQuant}`;
     const po = porOrigem.get(kO) ?? { qtd: 0, ids: [], livre };
     po.qtd += m.qtd; po.ids.push(m.id); porOrigem.set(kO, po);
-    if (m.status !== "divergente" && livre < m.qtd - EPS) stale.push(`${m.id} · ${m.pi} em ${m.de.dep} ${m.de.end}: saldo livre ${fmt(livre)} < ${fmt(m.qtd)}`);
+    const aguardaChegada = m.tipo === "movimentacao" && abertas.some((x) => x !== m && x.pi === m.pi && chaveLoc(x.para) === chaveLoc(m.de));
+    if (m.status !== "divergente" && !aguardaChegada && livre < m.qtd - EPS) stale.push(`${m.id} · ${m.pi} em ${m.de.dep} ${m.de.end}: saldo livre ${fmt(livre)} < ${fmt(m.qtd)}`);
     const ocup = ctx.ocupFr.get(chaveLoc(m.para)) ?? new Set<string>();
     const outros = [...ocup].filter((p) => p !== m.pi);
     if (outros.length && !ocup.has(m.pi) && m.onda === 1 && m.origem === "manual") conflito.push(`${m.id} · destino ${m.para.dep} ${m.para.end} também tem ${outros.slice(0, 3).join(", ")}`);
     const lim = ctx.limites(m.pi);
     const emDest = ctx.livreLoc.get(`${m.pi}|${chaveLoc(m.para)}`) ?? 0;
-    if (lim && !ehZona(m.para) && emDest + m.qtd > lim.maxUn + EPS && m.para.dep && ctx.areasLoc.get(chaveLoc(m.para))?.has("FR")) estouro.push(`${m.id} · ${m.pi}: ${fmt(emDest + m.qtd)} un no destino > máximo ${fmt(lim.maxUn)}`);
+    if (lim && !ehZona(m.para) && Math.floor((emDest + m.qtd) / lim.cxp + EPS) > lim.maxCx && m.para.dep && ctx.areasLoc.get(chaveLoc(m.para))?.has("FR")) estouro.push(`${m.id} · ${m.pi}: ${fmt(emDest + m.qtd)} un no destino > máximo ${fmt(lim.maxUn)}`);
     const idade = Date.parse(agora) - Date.parse(m.atualizadoEm);
     if ((m.status === "pendente" && idade > 2 * DIA) || (m.status === "em_execucao" && idade > 1 * DIA)) paradas.push(`${m.id} · ${m.status === "pendente" ? "pendente" : "em execução"} há ${Math.floor(idade / DIA)} dia(s)`);
     if (ctx.est.get(m.pi)?.noP04) foraRegra.push(`${m.id} · ${m.pi} tem saldo no P04 (fora das regras de reposição)`);
@@ -684,13 +717,15 @@ export function validarManual(e: EntradaManual, ctx: Contexto, missoes: Missao[]
   } else {
     if (areasDe && !areasDe.has("FR")) aviso("A origem não é uma LOC FR.");
     if (areasPara && !areasPara.has("FR") && !areasPara.has("SC")) aviso("O destino não é uma LOC FR nem SC.");
+    if (areasPara?.has("SC") && !areasPara.has("FR") && cxp && Math.abs(qtd / cxp - Math.round(qtd / cxp)) > 1e-6) aviso(`Devolução ao SC deve ser em caixas fechadas: ${fmt(qtd)} un não é múltiplo da caixa padrão (${fmt(cxp)}).`);
+    if (areasPara?.has("SC") && !areasPara.has("FR") && !cxp) aviso("Caixa padrão (CXP) deste PI não conhecida: não dá para conferir se a devolução ao SC é em caixas fechadas.");
   }
   if (areasPara?.has("FR")) {
     const ocupDest = ctx.ocupFr.get(chaveLoc(e.para)) ?? new Set<string>();
     const outros = [...ocupDest].filter((p) => p !== e.pi);
     if (outros.length && !ocupDest.has(e.pi) && !ehZona(e.para)) aviso(`O destino já tem outro PI (${outros.slice(0, 3).join(", ")}): a regra de 1 PI por LOC será quebrada.`);
     const noDest = ctx.livreLoc.get(`${e.pi}|${chaveLoc(e.para)}`) ?? 0;
-    if (lim && noDest + qtd > lim.maxUn + EPS) aviso(`O destino ficaria com ${fmt(noDest + qtd)} un, acima do máximo de ${lim.maxCx} caixa(s) (${fmt(lim.maxUn)} un).`);
+    if (lim && Math.floor((noDest + qtd) / lim.cxp + EPS) > lim.maxCx) aviso(`O destino ficaria com ${fmt(noDest + qtd)} un, acima do máximo de ${lim.maxCx} caixa(s) (${fmt(lim.maxUn)} un).`);
   }
   if (ctx.est.get(e.pi)?.noP04) aviso("Este PI tem saldo no P04, que fica fora das regras de reposição.");
   return { avisos: av, qtd };
