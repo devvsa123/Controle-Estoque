@@ -64,3 +64,9 @@ export const RUAS_FORA_LAYOUT_FR: { dep: string; rua: number }[] = [{ dep: "P02"
 
 /** Missões de reposição/movimentação do FR (JSON compartilhado, gravado no Blob). */
 export const ARQUIVO_MISSOES = "controle-missoes.json";
+
+/** Calçados: caixas grandes, então o máximo por LOC no fracionado é menor. Identificados pela 1ª palavra da descrição (BOTAO não é calçado). */
+export const CALCADOS_PRIMEIRA_PALAVRA = ["SAPATO", "COTURNO", "BOTA", "TENIS", "MOCASSIM", "SANDALIA", "CHINELO", "BOTINA"];
+
+/** Zona de baixo giro: quando faltam LOCs, os PIs de menor saída ficam aqui com poucas caixas (vários PIs por LOC). */
+export const ZONA_BAIXO_GIRO = { dep: "P02", rua: 1 };

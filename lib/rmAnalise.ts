@@ -1,5 +1,6 @@
 import type { RmDados } from "./rm";
 import { DEPOSITOS_FORA_REPOSICAO } from "./config";
+import { demandaFracionada } from "./demandaFr";
 import type { Dados } from "./types";
 
 /** Faixas da sobra fracionada em relação à caixa padrão. */
@@ -135,7 +136,11 @@ export interface ItemRepo {
   cxp: number;
   pedidosFr: number; // pedidos fracionados em todo o histórico
   ultimoFr: number; // dia do último pedido fracionado
-  media: number; // unidades/dia de sobra na janela (informativo)
+  media: number; // unidades/dia de sobra na janela (usado só nas alocações de 7 e 11 dias)
+  qtdMediaPedido: number; // média de unidades por pedido fracionado (sobra)
+  freqTexto: string; // frequência média de pedidos fracionados
+  mesesAtivos: number;
+  mesesSpan: number;
   estFr: number;
   estSc: number;
   bloq: number; // saldo bloqueado (depósitos de estoque)
@@ -220,6 +225,7 @@ export function calcReposicao(
     if (rm.d[i] >= dMin) a.sobraJanela += cl.sobra; // o FR só é consumido pela sobra
   }
 
+  const demandaPi = demandaFracionada(rm);
   const itens: ItemRepo[] = [];
   for (const [p, a] of acc) {
     totais.fracionados++;
@@ -252,7 +258,9 @@ export function calcReposicao(
       : [];
 
     itens.push({
-      pi, desc, cxp, pedidosFr: a.n, ultimoFr: a.ultimo, media, estFr, estSc, bloq, motivosBloq: e?.motivos ?? {},
+      pi, desc, cxp, pedidosFr: a.n, ultimoFr: a.ultimo, media,
+      qtdMediaPedido: demandaPi.get(pi)?.qtdMediaPedido ?? 0, freqTexto: demandaPi.get(pi)?.freqTexto ?? "—",
+      mesesAtivos: demandaPi.get(pi)?.mesesAtivos ?? 0, mesesSpan: demandaPi.get(pi)?.mesesSpan ?? 0, estFr, estSc, bloq, motivosBloq: e?.motivos ?? {},
       locsFr, caixasLoc, cobertura, situacao, caixasRepor, scInsuficiente: caixasRepor > 0 && estSc < cxp, opcoes, alocacoes,
     });
   }

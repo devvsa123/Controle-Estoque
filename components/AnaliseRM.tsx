@@ -281,11 +281,11 @@ function Reposicao({ rm, estoque }: { rm: RmDados; estoque: Dados | null }) {
     });
 
   function exportar() {
-    const cab = ["PI", "Descrição", "CXP", "Estoque FR", "Estoque SC", "Bloqueado", "Motivos do bloqueio", "Situação", "Caixas a repor", "Média/dia", "Pedidos fracionados (histórico)", "Último fracionado", "Caixas/LOC"];
+    const cab = ["PI", "Descrição", "CXP", "Estoque FR", "Estoque SC", "Bloqueado", "Motivos do bloqueio", "Situação", "Caixas a repor", "Média por pedido (un)", "Frequência", "Pedidos fracionados (histórico)", "Último fracionado", "Caixas/LOC"];
     const corpo = lista.map((i) => [
       i.pi, i.desc, i.cxp, i.estFr, i.estSc, i.bloq,
       Object.entries(i.motivosBloq).map(([m, v]) => `${m}: ${v}`).join(" | "),
-      ROTULO[i.situacao], i.caixasRepor, i.media.toFixed(2).replace(".", ","), i.pedidosFr, diaParaData(i.ultimoFr), i.caixasLoc,
+      ROTULO[i.situacao], i.caixasRepor, i.qtdMediaPedido.toFixed(1).replace(".", ","), i.freqTexto, i.pedidosFr, diaParaData(i.ultimoFr), i.caixasLoc,
     ]);
     const blob = new Blob(["\ufeff" + csv([cab, ...corpo])], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
@@ -304,7 +304,7 @@ function Reposicao({ rm, estoque }: { rm: RmDados; estoque: Dados | null }) {
       </p>
       <section className="card filters" aria-label="Parâmetros">
         <label>
-          Janela da média de saída (informativa)
+          Janela usada só nas alocações de 7 e 11 dias
           <select value={s.params.janela} onChange={(e) => setP("janela", +e.target.value)}>
             {JANELAS.map((j) => <option key={j.v} value={j.v}>{j.nome}</option>)}
           </select>
@@ -361,7 +361,7 @@ function Reposicao({ rm, estoque }: { rm: RmDados; estoque: Dados | null }) {
               <tr>
                 <th>Situação</th><th>PI</th><th>Descrição</th><th className="n">Caixa</th><th className="n">Estoque FR</th>
                 <th className="n">Estoque SC</th><th className="n">Bloqueado</th><th className="n">Repor (caixas)</th>
-                <th className="n">Média/dia</th><th>Último fracionado</th><th className="n">Caixas/LOC</th><th>Alocação 7 dias</th><th>Alocação 11 dias</th>
+                <th className="n">Média por pedido</th><th>Frequência</th><th>Último fracionado</th><th className="n">Caixas/LOC</th><th>Alocação 7 dias</th><th>Alocação 11 dias</th>
               </tr>
             </thead>
             <tbody>
@@ -395,7 +395,8 @@ function LinhaRepo({ i, aberto, onToggle, onCx }: { i: ItemRepo; aberto: boolean
         <td className="n" style={semSc || i.scInsuficiente ? { color: "var(--bad)" } : undefined}>{fmtNum(i.estSc)}</td>
         <td className="n">{i.bloq > 0 ? <strong style={{ color: "var(--warn)" }} title={Object.entries(i.motivosBloq).map(([m, v]) => `${m}: ${fmtNum(v)}`).join(" · ")}>{fmtNum(i.bloq)}</strong> : <span className="muted">0</span>}</td>
         <td className="n"><strong>{i.caixasRepor > 0 ? (semSc ? "sem SC" : fmtNum(i.caixasRepor)) : "—"}</strong></td>
-        <td className="n">{fmtNum(Math.round(i.media * 10) / 10)}</td>
+        <td className="n">{fmtNum(Math.round(i.qtdMediaPedido * 10) / 10)} un</td>
+        <td title={`Pedidos fracionados em ${i.mesesAtivos} de ${i.mesesSpan} meses`}>{i.freqTexto}</td>
         <td>{diaParaData(i.ultimoFr)}</td>
         <td className="n" onClick={(e) => e.stopPropagation()}>
           <input type="number" min={1} value={i.caixasLoc} style={{ width: 64, padding: "3px 6px" }} aria-label={`Caixas por LOC do PI ${i.pi}`}
@@ -405,7 +406,7 @@ function LinhaRepo({ i, aberto, onToggle, onCx }: { i: ItemRepo; aberto: boolean
       </tr>
       {aberto && (
         <tr className="sub">
-          <td colSpan={13}>
+          <td colSpan={14}>
             <p style={{ margin: "4px 0" }}>
               {fmtNum(i.pedidosFr)} pedidos fracionados no histórico; último em {diaParaData(i.ultimoFr)}. LOCs FR atuais: {i.locsFr}.
               {Number.isFinite(i.cobertura) && <> Pela média, o FR atual dura {fmtNum(Math.round(i.cobertura * 10) / 10)} dias.</>}
