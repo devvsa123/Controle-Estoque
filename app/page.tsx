@@ -75,23 +75,33 @@ export default function Page() {
     carregar();
   }, []);
 
+  // Abas visitadas continuam montadas (só escondidas): trocar de aba não busca os dados de novo
+  // nem perde filtros/buscas. Cada módulo só é montado (e só baixa seus dados) na primeira visita.
+  const [visitados, setVisitados] = useState<Record<string, boolean>>({ estoque: true });
+  const abrir = (m: "estoque" | "rm" | "bloqueios") => {
+    setVisitados((v) => (v[m] ? v : { ...v, [m]: true }));
+    setModulo(m);
+  };
+
   return (
     <>
       <nav className="modnav">
         <div className="seg" role="group" aria-label="Módulo">
-          <button aria-pressed={modulo === "estoque"} onClick={() => setModulo("estoque")}>Estoque</button>
-          <button aria-pressed={modulo === "rm"} onClick={() => setModulo("rm")}>Análise de RM</button>
-          <button aria-pressed={modulo === "bloqueios"} onClick={() => setModulo("bloqueios")}>Bloqueios NAO ENCONTRADO</button>
+          <button aria-pressed={modulo === "estoque"} onClick={() => abrir("estoque")}>Estoque</button>
+          <button aria-pressed={modulo === "rm"} onClick={() => abrir("rm")}>Análise de RM</button>
+          <button aria-pressed={modulo === "bloqueios"} onClick={() => abrir("bloqueios")}>Bloqueios NAO ENCONTRADO</button>
         </div>
       </nav>
-      {modulo === "estoque" ? (
+      <div hidden={modulo !== "estoque"}>
         <EstoqueView dados={dados} erro={erro} carregando={carregando} carregar={carregar} />
-      ) : modulo === "rm" ? (
-        <div className="wrap" style={{ paddingTop: 12 }}>
+      </div>
+      {visitados.rm && (
+        <div className="wrap" style={{ paddingTop: 12 }} hidden={modulo !== "rm"}>
           <AnaliseRM estoque={dados} />
         </div>
-      ) : (
-        <div className="wrap" style={{ paddingTop: 12 }}>
+      )}
+      {visitados.bloqueios && (
+        <div className="wrap" style={{ paddingTop: 12 }} hidden={modulo !== "bloqueios"}>
           <Bloqueios />
         </div>
       )}
