@@ -5,13 +5,13 @@ import type { RmDados } from "@/lib/rm";
 import type { Dados } from "@/lib/types";
 import {
   NOME_GRUPO, PARAMS_PADRAO, calcReposicao, estoquePorPi, visaoGeral,
-  type ItemRepo, type ParamsRepo,
+  type Alocacao, type ItemRepo, type ParamsRepo,
 } from "@/lib/rmAnalise";
 import { csv, fmtDataHora, fmtNum, norm } from "@/lib/util";
 
 type Sub = "geral" | "reposicao";
 
-const CHAVE_LS = "controle-estoque:rm:v1";
+const CHAVE_LS = "controle-estoque:rm:v2";
 
 function lerLS<T>(def: T): T {
   try {
@@ -87,7 +87,7 @@ export default function AnaliseRM({ estoque }: { estoque: Dados | null }) {
         </span>
       </div>
       <p className="muted small" style={{ margin: 0 }}>
-        Cada linha da planilha é um item de uma RM. Pedido <strong>fracionado</strong> = QTD que não é múltiplo da caixa padrão (CXP). Cancelados ficam de fora
+        Cada linha da planilha é um item de uma RM. Um pedido gera um lote de caixa fechada e/ou um lote <strong>fracionado</strong> com a sobra (ex.: 24 com caixa de 20 → 1 caixa + 4 un fracionadas); só a sobra consome o FR. Cancelados ficam de fora
         {rm.resumo.canceladas ? ` (${fmtNum(rm.resumo.canceladas)})` : ""}
         {rm.resumo.semQtd + rm.resumo.semCxp + rm.resumo.semData > 0
           ? `; ${fmtNum(rm.resumo.semQtd + rm.resumo.semCxp + rm.resumo.semData)} linhas sem QTD/CXP/data válidos também foram ignoradas`
@@ -309,13 +309,6 @@ function Reposicao({ rm, estoque }: { rm: RmDados; estoque: Dados | null }) {
             onChange={(e) => setP("caixasLoc", Math.max(1, +e.target.value || 1))} />
         </label>
         <label>
-          Consumo do FR considera
-          <select value={s.params.base} onChange={(e) => setP("base", e.target.value as ParamsRepo["base"])}>
-            <option value="total">Quantidade total do pedido fracionado</option>
-            <option value="sobra">Somente a sobra (após caixas fechadas)</option>
-          </select>
-        </label>
-        <label>
           Mín. de pedidos fracionados
           <input type="number" min={1} value={s.params.minPedidos} style={{ width: 90 }}
             onChange={(e) => setP("minPedidos", Math.max(1, +e.target.value || 1))} />
@@ -350,7 +343,7 @@ function Reposicao({ rm, estoque }: { rm: RmDados; estoque: Dados | null }) {
             <thead>
               <tr>
                 <th>Situação</th><th>PI</th><th>Descrição</th><th className="n">Caixa</th><th className="n">Média/dia</th>
-                <th className="n">Estoque FR</th><th className="n">Cobertura</th><th className="n">Caixas/LOC</th><th className="n">Repor (caixas)</th><th className="n">Estoque SC</th>
+                <th className="n">Estoque FR</th><th className="n">Cobertura</th><th className="n">Caixas/LOC</th><th className="n">Repor (caixas)</th><th>Alocação 7 dias</th><th>Alocação 11 dias</th><th className="n">Estoque SC</th>
               </tr>
             </thead>
             <tbody>
@@ -365,6 +358,10 @@ function Reposicao({ rm, estoque }: { rm: RmDados; estoque: Dados | null }) {
       </div>
     </>
   );
+}
+
+function resumoAloc(a: Alocacao): string {
+  return `${a.locs} ${a.locs === 1 ? "LOC" : "LOCs"} · ${a.caixas} cx${a.locs > 1 ? ` (${a.distribuicao.join("+")})` : ""}`;
 }
 
 function LinhaRepo({ i, dias, aberto, onToggle, onCx }: { i: ItemRepo; dias: number; aberto: boolean; onToggle: () => void; onCx: (v: number) => void }) {
@@ -386,14 +383,26 @@ function LinhaRepo({ i, dias, aberto, onToggle, onCx }: { i: ItemRepo; dias: num
             onChange={(e) => onCx(+e.target.value)} />
         </td>
         <td className="n"><strong>{i.caixasRepor > 0 ? fmtNum(i.caixasRepor) : "—"}</strong></td>
+        {i.alocacoes.map((a) => <td key={a.dias} className="small">{resumoAloc(a)}</td>)}
         <td className="n" style={i.faltaSc ? { color: "var(--bad)" } : undefined}>{fmtNum(i.estSc)}</td>
       </tr>
       {aberto && (
         <tr className="sub">
-          <td colSpan={10}>
+          <td colSpan={12}>
             <p style={{ margin: "4px 0" }}>
               {fmtNum(i.pedidosFr)} pedidos fracionados na janela ({fmtNum(i.unidadesFr)} un). Meta de {dias} dias = {fmtNum(i.caixasNecessarias)} caixas. LOCs FR atuais: {i.locsFr}.
             </p>
+            <table style={{ width: "auto", marginBottom: 8 }}>
+              <thead><tr><th>Meta</th><th className="n">Caixas</th><th className="n">LOCs FR</th><th>Distribuição por LOC (caixas)</th><th className="n">LOCs novas</th><th className="n">Trazer do SC (caixas)</th></tr></thead>
+              <tbody>
+                {i.alocacoes.map((a) => (
+                  <tr key={a.dias}>
+                    <td>{a.dias} dias</td><td className="n">{fmtNum(a.caixas)} ({fmtNum(a.caixas * i.cxp)} un)</td><td className="n">{a.locs}</td>
+                    <td>{a.distribuicao.join(" + ")}</td><td className="n">{a.locsNovas || "—"}</td><td className="n">{a.repor || "—"}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
             <div className="grade" aria-label="Opções de caixas na LOC">
               {i.opcoes.map((o) => (
                 <span key={o.caixas} style={o.dias < dias ? { borderColor: "var(--bad)" } : undefined}>

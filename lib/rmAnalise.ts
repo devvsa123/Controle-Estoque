@@ -1,4 +1,5 @@
 import type { RmDados } from "./rm";
+import { DEPOSITOS_FRACIONADOS } from "./config";
 import type { Dados } from "./types";
 
 /** Faixas da sobra fracionada em relação à caixa padrão. */
@@ -111,11 +112,10 @@ export interface ParamsRepo {
   janela: number; // dias da média de consumo; 0 = todo o histórico
   diasAlvo: number; // cobertura desejada no FR
   caixasLoc: number; // caixas que cabem numa LOC FR (padrão para todo PI)
-  base: "total" | "sobra"; // o que consome o FR: o pedido fracionado inteiro ou só a sobra
   minPedidos: number; // mínimo de pedidos fracionados na janela para entrar na análise
 }
 
-export const PARAMS_PADRAO: ParamsRepo = { janela: 90, diasAlvo: 7, caixasLoc: 15, base: "total", minPedidos: 2 };
+export const PARAMS_PADRAO: ParamsRepo = { janela: 90, diasAlvo: 7, caixasLoc: 15, minPedidos: 2 };
 
 export type Situacao = "critico" | "atencao" | "ok";
 
@@ -139,21 +139,34 @@ export interface ItemRepo {
   caixasRepor: number; // sugestão limitada pelo espaço
   faltaSc: boolean; // SC não tem o que precisa para repor
   opcoes: { caixas: number; dias: number }[];
+  alocacoes: Alocacao[]; // cenários de alocação (7 e 11 dias)
   sugestoes: string[];
+}
+
+export const DIAS_ALOCACAO = [7, 11];
+
+export interface Alocacao {
+  dias: number;
+  caixas: number; // caixas para cobrir `dias`
+  locs: number; // LOCs FR necessárias
+  distribuicao: number[]; // caixas em cada LOC (ex.: [15, 15, 8])
+  locsNovas: number; // LOCs além das que o PI já ocupa
+  repor: number; // caixas a trazer, descontado o que já está no FR
 }
 
 export interface EstoquePi { fr: number; sc: number; locs: Set<string> }
 
-/** Saldo LIVRE por PI nas áreas FR/SC dos depósitos que contam como estoque. */
+/** Saldo LIVRE por PI: FR = área FR + todo o P04; SC = área SC. Só depósitos que contam como estoque. */
 export function estoquePorPi(dados: Dados | null): Map<string, EstoquePi> {
   const m = new Map<string, EstoquePi>();
   if (!dados) return m;
   for (const l of dados.linhas) {
     if (dados.escopos[l.dep] !== "estoque" || !l.livre || l.disp <= 0) continue;
-    if (l.area !== "FR" && l.area !== "SC") continue;
+    const ehFr = l.area === "FR" || DEPOSITOS_FRACIONADOS.includes(l.dep); // tudo no P04 é fracionado
+    if (!ehFr && l.area !== "SC") continue;
     let e = m.get(l.pi);
     if (!e) m.set(l.pi, (e = { fr: 0, sc: 0, locs: new Set() }));
-    if (l.area === "FR") { e.fr += l.disp; e.locs.add(l.dep + "|" + l.end); } else e.sc += l.disp;
+    if (ehFr) { e.fr += l.disp; e.locs.add(l.dep + "|" + l.end); } else e.sc += l.disp;
   }
   return m;
 }
@@ -181,7 +194,7 @@ export function calcReposicao(
     let a = acc.get(rm.p[i]);
     if (!a) acc.set(rm.p[i], (a = { n: 0, un: 0, cxpFreq: new Map() }));
     a.n++;
-    a.un += params.base === "total" ? rm.q[i] : cl.sobra;
+    a.un += cl.sobra; // o FR só é consumido pela sobra; as caixas fechadas saem do SC
     a.cxpFreq.set(rm.c[i], (a.cxpFreq.get(rm.c[i]) ?? 0) + 1);
   }
 
@@ -211,6 +224,14 @@ export function calcReposicao(
       .sort((x, y) => x - y)
       .map((caixas) => ({ caixas, dias: (caixas * cxp) / media }));
 
+    const alocacoes: Alocacao[] = DIAS_ALOCACAO.map((dias) => {
+      const caixas = Math.max(1, Math.ceil((dias * media) / cxp - 1e-9));
+      const locs = Math.ceil(caixas / caixasLoc);
+      const distribuicao = Array.from({ length: locs }, (_, k) => (k < locs - 1 ? caixasLoc : caixas - caixasLoc * (locs - 1)));
+      const repor = Math.max(0, Math.ceil((caixas * cxp - estFr) / cxp - 1e-9));
+      return { dias, caixas, locs, distribuicao, locsNovas: Math.max(0, locs - (e?.locs.size ?? 0)), repor };
+    });
+
     const sugestoes: string[] = [];
     if (locInsuficiente) {
       const locsNec = Math.ceil(caixasNecessarias / caixasLoc);
@@ -226,7 +247,7 @@ export function calcReposicao(
     if (caixasRepor > 0 && faltaSc) {
       sugestoes.push(`Saldo livre em SC (${fmt1(estSc)} un) não cobre as ${caixasRepor} caixas sugeridas; verifique outras origens/recebimento.`);
     }
-    itens.push({ pi, desc, cxp, pedidosFr: a.n, unidadesFr: a.un, media, estFr, estSc, locsFr, caixasLoc, capacidade, cobertura, coberturaMax, situacao, locInsuficiente, caixasNecessarias, caixasRepor, faltaSc, opcoes, sugestoes });
+    itens.push({ pi, desc, cxp, pedidosFr: a.n, unidadesFr: a.un, media, estFr, estSc, locsFr, caixasLoc, capacidade, cobertura, coberturaMax, situacao, locInsuficiente, caixasNecessarias, caixasRepor, faltaSc, opcoes, alocacoes, sugestoes });
   }
   const peso = { critico: 0, atencao: 1, ok: 2 } as const;
   itens.sort((x, y) => peso[x.situacao] - peso[y.situacao] || x.cobertura - y.cobertura || y.media - x.media);
