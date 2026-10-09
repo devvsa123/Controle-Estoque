@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { RmDados } from "@/lib/rm";
 import type { Dados } from "@/lib/types";
-import { NOME_DEPOSITO } from "@/lib/config";
+import { NOME_DEPOSITO, RUAS_FORA_LAYOUT_FR } from "@/lib/config";
 import { estatisticas, infoPedidos, montarLayout, simular, type LinhaSim, type LocFr, type PiFr } from "@/lib/layoutFr";
 import { csv, fmtNum, norm } from "@/lib/util";
 
@@ -69,7 +69,7 @@ export default function LayoutFr({ estoque }: { estoque: Dados | null }) {
     <div className="grid" style={{ gap: 12 }}>
       <p className="muted small" style={{ margin: 0 }}>
         LOCs da área <strong>FR</strong> dos paiois P01, P02, P03 e P05 (o P04 fica de fora). Uma LOC é a combinação paiol + endereço. A planilha só mostra LOCs que têm saldo; LOCs FR
-        vazias não aparecem aqui.
+        vazias não aparecem aqui. Desconsiderado nesta análise: {RUAS_FORA_LAYOUT_FR.map((r) => `${r.dep} rua ${r.rua}`).join(", ")}.
       </p>
 
       <section className="card filters" aria-label="Filtros do layout">

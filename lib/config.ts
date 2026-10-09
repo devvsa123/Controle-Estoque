@@ -58,3 +58,6 @@ export const DEPOSITOS_FORA_REPOSICAO = ["P04"];
 /** Controle de tratativa dos bloqueios "NAO ENCONTRADO" (JSON compartilhado, gravado no Blob). */
 export const ARQUIVO_BLOQUEIOS = "controle-bloqueios-nao-encontrado.json";
 export const MOTIVO_NAO_ENCONTRADO = "NAO ENCONTRADO";
+
+/** LOCs FR que a análise de layout desconsidera: paiol + rua (1º número do endereço, ex.: 12-01-01-AA = rua 12). */
+export const RUAS_FORA_LAYOUT_FR: { dep: string; rua: number }[] = [{ dep: "P02", rua: 12 }];
