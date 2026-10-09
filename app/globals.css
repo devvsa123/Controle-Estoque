@@ -102,3 +102,4 @@ input[type=number] { padding: 7px 9px; border: 1px solid var(--line); border-rad
 code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
 .hbar.wide { grid-template-columns: 64px 1fr 200px; }
 .hbar .val { white-space: nowrap; }
+.grid > * { min-width: 0; }

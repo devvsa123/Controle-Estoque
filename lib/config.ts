@@ -52,5 +52,5 @@ export const ARQUIVO_BLOB = "controle-estoque.xlsx";
 /** Planilha de pedidos (RM). O robô publica como .xls, mas o conteúdo é XLSX. */
 export const ARQUIVOS_RM = ["planilha_estoque.xls", "planilha_estoque.xlsx", "planilha_estoque"];
 
-/** Depósitos em que tudo é fracionado, independente da área (ex.: P04 tem AVEP/AP). */
-export const DEPOSITOS_FRACIONADOS = ["P04"];
+/** PIs com saldo nestes depósitos ficam fora da reposição do FR (o P04 tem gestão própria). */
+export const DEPOSITOS_FORA_REPOSICAO = ["P04"];

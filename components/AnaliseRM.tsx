@@ -228,14 +228,14 @@ const JANELAS = [
   { v: 180, nome: "180 dias" }, { v: 365, nome: "12 meses" }, { v: 0, nome: "Todo o histórico" },
 ];
 
-const ROTULO = { critico: "CRÍTICO", atencao: "ATENÇÃO", ok: "OK" } as const;
+const ROTULO = { critico: "FR ZERADO", atencao: "< 1 CAIXA", ok: "OK" } as const;
 const TOM = { critico: "bad", atencao: "warn", ok: "ok" } as const;
 
 function Reposicao({ rm, estoque }: { rm: RmDados; estoque: Dados | null }) {
   const [s, setS] = useState<Salvo>({ params: PARAMS_PADRAO, caixasPorPi: {} });
   const [pronto, setPronto] = useState(false);
   const [q, setQ] = useState("");
-  const [filtro, setFiltro] = useState<"alertas" | "todos" | "loc">("alertas");
+  const [filtro, setFiltro] = useState<"alertas" | "bloqueado" | "todos">("alertas");
   const [aberto, setAberto] = useState<string | null>(null);
 
   useEffect(() => {
@@ -248,13 +248,14 @@ function Reposicao({ rm, estoque }: { rm: RmDados; estoque: Dados | null }) {
   }, [s, pronto]);
 
   const est = useMemo(() => estoquePorPi(estoque), [estoque]);
-  const { itens, janelaDias, ultimoDia } = useMemo(() => calcReposicao(rm, est, s.params, s.caixasPorPi), [rm, est, s]);
+  const { itens, janelaDias, ultimoDia, totais } = useMemo(() => calcReposicao(rm, est, s.params, s.caixasPorPi), [rm, est, s]);
+  const diag = useMemo(() => diagnostico(rm), [rm]);
 
   const lista = useMemo(() => {
     const toks = norm(q).split(/\s+/).filter(Boolean);
     return itens.filter((i) => {
       if (filtro === "alertas" && i.situacao === "ok") return false;
-      if (filtro === "loc" && !i.locInsuficiente) return false;
+      if (filtro === "bloqueado" && !(i.estSc <= 0 && i.bloq > 0)) return false;
       if (toks.length) {
         const h = norm(`${i.pi} ${i.desc}`);
         if (!toks.every((t) => h.includes(t))) return false;
@@ -263,11 +264,10 @@ function Reposicao({ rm, estoque }: { rm: RmDados; estoque: Dados | null }) {
     });
   }, [itens, q, filtro]);
 
-  const diag = useMemo(() => diagnostico(rm, s.params), [rm, s.params]);
   const cont = useMemo(() => ({
     critico: itens.filter((i) => i.situacao === "critico").length,
     atencao: itens.filter((i) => i.situacao === "atencao").length,
-    loc: itens.filter((i) => i.locInsuficiente).length,
+    soBloq: itens.filter((i) => i.estSc <= 0 && i.bloq > 0).length,
   }), [itens]);
 
   const setP = <K extends keyof ParamsRepo>(k: K, v: ParamsRepo[K]) => setS((o) => ({ ...o, params: { ...o.params, [k]: v } }));
@@ -279,9 +279,13 @@ function Reposicao({ rm, estoque }: { rm: RmDados; estoque: Dados | null }) {
     });
 
   function exportar() {
-    const cab = ["PI", "Descrição", "CXP", "Pedidos fracionados", "Média/dia", "Estoque FR", "Estoque SC", "Cobertura FR (dias)", "Situação", "Caixas/LOC", "LOC comporta a meta", "Caixas a repor"];
-    const corpo = lista.map((i) => [i.pi, i.desc, i.cxp, i.pedidosFr, i.media.toFixed(2).replace(".", ","), i.estFr, i.estSc, Number.isFinite(i.cobertura) ? i.cobertura.toFixed(1).replace(".", ",") : "", ROTULO[i.situacao], i.caixasLoc, i.locInsuficiente ? "NÃO" : "SIM", i.caixasRepor]);
-    const blob = new Blob(["﻿" + csv([cab, ...corpo])], { type: "text/csv;charset=utf-8" });
+    const cab = ["PI", "Descrição", "CXP", "Estoque FR", "Estoque SC", "Bloqueado", "Motivos do bloqueio", "Situação", "Caixas a repor", "Média/dia", "Pedidos fracionados (histórico)", "Último fracionado", "Caixas/LOC"];
+    const corpo = lista.map((i) => [
+      i.pi, i.desc, i.cxp, i.estFr, i.estSc, i.bloq,
+      Object.entries(i.motivosBloq).map(([m, v]) => `${m}: ${v}`).join(" | "),
+      ROTULO[i.situacao], i.caixasRepor, i.media.toFixed(2).replace(".", ","), i.pedidosFr, diaParaData(i.ultimoFr), i.caixasLoc,
+    ]);
+    const blob = new Blob(["\ufeff" + csv([cab, ...corpo])], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
     a.download = "reposicao-fr.csv";
@@ -292,65 +296,58 @@ function Reposicao({ rm, estoque }: { rm: RmDados; estoque: Dados | null }) {
   return (
     <>
       {!estoque && <div className="note">O estoque ainda não foi carregado; as quantidades em FR/SC aparecem zeradas até ele carregar.</div>}
-      <section className="card filters" aria-label="Parâmetros da reposição">
+      <p className="muted small" style={{ margin: 0 }}>
+        <strong>Regra do alerta:</strong> todo PI que já teve pedido fracionado precisa ter ao menos <strong>1 caixa padrão no FR</strong>. Ficam de fora os PIs com saldo no P04 e os que
+        têm SC zerado <em>e</em> nada bloqueado. PIs com SC zerado mas com saldo bloqueado aparecem, com a quantidade bloqueada.
+      </p>
+      <section className="card filters" aria-label="Parâmetros">
         <label>
-          Janela da média de consumo
+          Janela da média de saída (informativa)
           <select value={s.params.janela} onChange={(e) => setP("janela", +e.target.value)}>
             {JANELAS.map((j) => <option key={j.v} value={j.v}>{j.nome}</option>)}
           </select>
-        </label>
-        <label>
-          Cobertura desejada no FR (dias)
-          <input type="number" min={1} value={s.params.diasAlvo} style={{ width: 90 }}
-            onChange={(e) => setP("diasAlvo", Math.max(1, +e.target.value || 1))} />
         </label>
         <label>
           Caixas por LOC FR (padrão)
           <input type="number" min={1} value={s.params.caixasLoc} style={{ width: 90 }}
             onChange={(e) => setP("caixasLoc", Math.max(1, +e.target.value || 1))} />
         </label>
-        <label>
-          Mín. de pedidos fracionados
-          <input type="number" min={1} value={s.params.minPedidos} style={{ width: 90 }}
-            onChange={(e) => setP("minPedidos", Math.max(1, +e.target.value || 1))} />
-        </label>
         <span className="muted small" style={{ flexBasis: "100%" }}>
-          Média calculada sobre {fmtNum(janelaDias)} dias até {ultimoDia ? diaParaData(ultimoDia) : "—"}. Os ajustes ficam salvos neste navegador.
+          Média calculada sobre {fmtNum(janelaDias)} dias até {ultimoDia ? diaParaData(ultimoDia) : "—"}. As caixas por LOC ficam salvas neste navegador.
           {Object.keys(s.caixasPorPi).length > 0 && (
-            <> {fmtNum(Object.keys(s.caixasPorPi).length)} PI(s) com caixas/LOC personalizadas · <button className="btn" onClick={() => setS((o) => ({ ...o, caixasPorPi: {} }))}>Voltar tudo ao padrão</button></>
+            <> {fmtNum(Object.keys(s.caixasPorPi).length)} PI(s) personalizados · <button className="btn" onClick={() => setS((o) => ({ ...o, caixasPorPi: {} }))}>Voltar tudo ao padrão</button></>
           )}
         </span>
       </section>
 
       <div className="grid g4">
-        <div className="card kpi bad"><div className="v">{fmtNum(cont.critico)}</div><div className="l">PIs críticos (FR zerado ou menos de 40% da meta)</div></div>
-        <div className="card kpi warn"><div className="v">{fmtNum(cont.atencao)}</div><div className="l">PIs em atenção (abaixo da meta de cobertura)</div></div>
-        <div className="card kpi"><div className="v">{fmtNum(cont.loc)}</div><div className="l">PIs em que a LOC cheia não cobre a meta</div></div>
-        <div className="card kpi"><div className="v">{fmtNum(itens.length)}</div><div className="l">PIs com demanda fracionada analisados</div></div>
+        <div className="card kpi bad"><div className="v">{fmtNum(cont.critico)}</div><div className="l">PIs com FR zerado</div></div>
+        <div className="card kpi warn"><div className="v">{fmtNum(cont.atencao)}</div><div className="l">PIs com menos de 1 caixa no FR</div></div>
+        <div className="card kpi"><div className="v">{fmtNum(cont.soBloq)}</div><div className="l">PIs com SC zerado e saldo bloqueado</div></div>
+        <div className="card kpi"><div className="v">{fmtNum(itens.length)}</div><div className="l">PIs fracionados visíveis</div></div>
       </div>
 
       <details className="card">
-        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Por que nem todos os PIs aparecem aqui? ({fmtNum(diag.analisados)} de {fmtNum(diag.pisTotal)} PIs analisados)</summary>
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Por que nem todos os PIs aparecem aqui? ({fmtNum(itens.length)} de {fmtNum(diag.pisTotal)} PIs)</summary>
         <table style={{ marginTop: 8 }}>
           <tbody>
             <tr><td>PIs distintos nos pedidos (sem cancelados)</td><td className="n">{fmtNum(diag.pisTotal)}</td></tr>
             <tr><td>Sem caixa padrão (CXP) válida — não dá para saber se foram fracionados</td><td className="n">{fmtNum(diag.semCxp)}</td></tr>
             <tr><td>Caixa padrão = 1 (unitária): todo pedido é múltiplo, nunca fraciona</td><td className="n">{fmtNum(diag.cxpUm)}</td></tr>
             <tr><td>Caixa padrão &gt; 1, mas todos os pedidos foram de caixas fechadas</td><td className="n">{fmtNum(diag.soCaixaFechada)}</td></tr>
-            <tr><td><strong>Já tiveram pedido fracionado no histórico</strong></td><td className="n"><strong>{fmtNum(diag.fracionadoHistorico)}</strong></td></tr>
-            <tr><td>↳ nenhum fracionado na janela da média</td><td className="n">{fmtNum(diag.foraDaJanela)}</td></tr>
-            <tr><td>↳ fracionado na janela, mas menos que o mínimo de {s.params.minPedidos} pedido(s)</td><td className="n">{fmtNum(diag.abaixoDoMinimo)}</td></tr>
-            <tr><td>↳ <strong>analisados na reposição</strong></td><td className="n"><strong>{fmtNum(diag.analisados)}</strong></td></tr>
+            <tr><td><strong>Já tiveram pedido fracionado no histórico</strong></td><td className="n"><strong>{fmtNum(totais.fracionados)}</strong></td></tr>
+            <tr><td>↳ ignorados por terem saldo no P04</td><td className="n">{fmtNum(totais.noP04)}</td></tr>
+            <tr><td>↳ ignorados por SC zerado e nada bloqueado</td><td className="n">{fmtNum(totais.semScSemBloq)}</td></tr>
+            <tr><td>↳ <strong>visíveis nesta tela</strong></td><td className="n"><strong>{fmtNum(totais.visiveis)}</strong></td></tr>
           </tbody>
         </table>
-        <p className="muted small">Aumente a janela da média ou reduza o mínimo de pedidos para incluir mais PIs.</p>
       </details>
 
       <div className="card">
         <div className="bar" style={{ justifyContent: "space-between" }}>
           <div className="seg" role="group" aria-label="Filtro">
-            <button aria-pressed={filtro === "alertas"} onClick={() => setFiltro("alertas")}>Só alertas</button>
-            <button aria-pressed={filtro === "loc"} onClick={() => setFiltro("loc")}>LOC não comporta</button>
+            <button aria-pressed={filtro === "alertas"} onClick={() => setFiltro("alertas")}>Alertas (FR &lt; 1 caixa)</button>
+            <button aria-pressed={filtro === "bloqueado"} onClick={() => setFiltro("bloqueado")}>SC zerado com bloqueio</button>
             <button aria-pressed={filtro === "todos"} onClick={() => setFiltro("todos")}>Todos</button>
           </div>
           <input type="search" placeholder="Buscar PI ou nome" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 220 }} />
@@ -360,13 +357,14 @@ function Reposicao({ rm, estoque }: { rm: RmDados; estoque: Dados | null }) {
           <table>
             <thead>
               <tr>
-                <th>Situação</th><th>PI</th><th>Descrição</th><th className="n">Caixa</th><th className="n">Média/dia</th>
-                <th className="n">Estoque FR</th><th className="n">Cobertura</th><th className="n">Caixas/LOC</th><th className="n">Repor (caixas)</th><th>Alocação 7 dias</th><th>Alocação 11 dias</th><th className="n">Estoque SC</th>
+                <th>Situação</th><th>PI</th><th>Descrição</th><th className="n">Caixa</th><th className="n">Estoque FR</th>
+                <th className="n">Estoque SC</th><th className="n">Bloqueado</th><th className="n">Repor (caixas)</th>
+                <th className="n">Média/dia</th><th>Último fracionado</th><th className="n">Caixas/LOC</th><th>Alocação 7 dias</th><th>Alocação 11 dias</th>
               </tr>
             </thead>
             <tbody>
               {lista.slice(0, 300).map((i) => (
-                <LinhaRepo key={i.pi} i={i} dias={s.params.diasAlvo} aberto={aberto === i.pi} onToggle={() => setAberto(aberto === i.pi ? null : i.pi)} onCx={(v) => setCx(i.pi, v)} />
+                <LinhaRepo key={i.pi} i={i} aberto={aberto === i.pi} onToggle={() => setAberto(aberto === i.pi ? null : i.pi)} onCx={(v) => setCx(i.pi, v)} />
               ))}
             </tbody>
           </table>
@@ -382,53 +380,63 @@ function resumoAloc(a: Alocacao): string {
   return `${a.locs} ${a.locs === 1 ? "LOC" : "LOCs"} · ${a.caixas} cx${a.locs > 1 ? ` (${a.distribuicao.join("+")})` : ""}`;
 }
 
-function LinhaRepo({ i, dias, aberto, onToggle, onCx }: { i: ItemRepo; dias: number; aberto: boolean; onToggle: () => void; onCx: (v: number) => void }) {
+function LinhaRepo({ i, aberto, onToggle, onCx }: { i: ItemRepo; aberto: boolean; onToggle: () => void; onCx: (v: number) => void }) {
+  const semSc = i.estSc <= 0;
   return (
     <>
       <tr className="click" onClick={onToggle}>
-        <td>
-          <span className={`tag ${TOM[i.situacao]}`}>{ROTULO[i.situacao]}</span>
-          {i.locInsuficiente && <span className="tag neutral" style={{ marginLeft: 4 }} title="A LOC cheia não cobre a meta de dias">LOC</span>}
-        </td>
+        <td><span className={`tag ${TOM[i.situacao]}`}>{ROTULO[i.situacao]}</span></td>
         <td>{aberto ? "▾" : "▸"} {i.pi}</td>
         <td className="wrapc">{i.desc}</td>
         <td className="n">{fmtNum(i.cxp)}</td>
-        <td className="n">{fmtNum(Math.round(i.media * 10) / 10)}</td>
         <td className="n">{fmtNum(i.estFr)}</td>
-        <td className="n">{Number.isFinite(i.cobertura) ? `${fmtNum(Math.round(i.cobertura * 10) / 10)} d` : "—"}</td>
+        <td className="n" style={semSc || i.scInsuficiente ? { color: "var(--bad)" } : undefined}>{fmtNum(i.estSc)}</td>
+        <td className="n">{i.bloq > 0 ? <strong style={{ color: "var(--warn)" }} title={Object.entries(i.motivosBloq).map(([m, v]) => `${m}: ${fmtNum(v)}`).join(" · ")}>{fmtNum(i.bloq)}</strong> : <span className="muted">0</span>}</td>
+        <td className="n"><strong>{i.caixasRepor > 0 ? (semSc ? "sem SC" : fmtNum(i.caixasRepor)) : "—"}</strong></td>
+        <td className="n">{fmtNum(Math.round(i.media * 10) / 10)}</td>
+        <td>{diaParaData(i.ultimoFr)}</td>
         <td className="n" onClick={(e) => e.stopPropagation()}>
           <input type="number" min={1} value={i.caixasLoc} style={{ width: 64, padding: "3px 6px" }} aria-label={`Caixas por LOC do PI ${i.pi}`}
             onChange={(e) => onCx(+e.target.value)} />
         </td>
-        <td className="n"><strong>{i.caixasRepor > 0 ? fmtNum(i.caixasRepor) : "—"}</strong></td>
-        {i.alocacoes.map((a) => <td key={a.dias} className="small">{resumoAloc(a)}</td>)}
-        <td className="n" style={i.faltaSc ? { color: "var(--bad)" } : undefined}>{fmtNum(i.estSc)}</td>
+        {[0, 1].map((k) => <td key={k} className="small">{i.alocacoes[k] ? resumoAloc(i.alocacoes[k]) : "—"}</td>)}
       </tr>
       {aberto && (
         <tr className="sub">
-          <td colSpan={12}>
+          <td colSpan={13}>
             <p style={{ margin: "4px 0" }}>
-              {fmtNum(i.pedidosFr)} pedidos fracionados na janela ({fmtNum(i.unidadesFr)} un). Meta de {dias} dias = {fmtNum(i.caixasNecessarias)} caixas. LOCs FR atuais: {i.locsFr}.
+              {fmtNum(i.pedidosFr)} pedidos fracionados no histórico; último em {diaParaData(i.ultimoFr)}. LOCs FR atuais: {i.locsFr}.
+              {Number.isFinite(i.cobertura) && <> Pela média, o FR atual dura {fmtNum(Math.round(i.cobertura * 10) / 10)} dias.</>}
             </p>
-            <table style={{ width: "auto", marginBottom: 8 }}>
-              <thead><tr><th>Meta</th><th className="n">Caixas</th><th className="n">LOCs FR</th><th>Distribuição por LOC (caixas)</th><th className="n">LOCs novas</th><th className="n">Trazer do SC (caixas)</th></tr></thead>
-              <tbody>
-                {i.alocacoes.map((a) => (
-                  <tr key={a.dias}>
-                    <td>{a.dias} dias</td><td className="n">{fmtNum(a.caixas)} ({fmtNum(a.caixas * i.cxp)} un)</td><td className="n">{a.locs}</td>
-                    <td>{a.distribuicao.join(" + ")}</td><td className="n">{a.locsNovas || "—"}</td><td className="n">{a.repor || "—"}</td>
-                  </tr>
+            {i.bloq > 0 && (
+              <p style={{ margin: "4px 0" }}>
+                Saldo bloqueado: <strong>{fmtNum(i.bloq)}</strong>{" "}
+                {Object.entries(i.motivosBloq).map(([m, v]) => <span key={m} className="tag bad" style={{ marginRight: 4 }}>{m}: {fmtNum(v)}</span>)}
+              </p>
+            )}
+            {i.situacao !== "ok" && semSc && i.bloq > 0 && (
+              <p style={{ margin: "4px 0" }}>Sem saldo livre em SC para repor; a reposição depende de desbloquear parte do saldo bloqueado acima.</p>
+            )}
+            {i.alocacoes.length > 0 && (
+              <table style={{ width: "auto", marginBottom: 8 }}>
+                <thead><tr><th>Meta (pela média)</th><th className="n">Caixas</th><th className="n">LOCs FR</th><th>Distribuição por LOC (caixas)</th><th className="n">LOCs novas</th><th className="n">Trazer do SC (caixas)</th></tr></thead>
+                <tbody>
+                  {i.alocacoes.map((a) => (
+                    <tr key={a.dias}>
+                      <td>{a.dias} dias</td><td className="n">{fmtNum(a.caixas)} ({fmtNum(a.caixas * i.cxp)} un)</td><td className="n">{a.locs}</td>
+                      <td>{a.distribuicao.join(" + ")}</td><td className="n">{a.locsNovas || "—"}</td><td className="n">{a.repor || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+            {i.opcoes.length > 0 && (
+              <div className="grade" aria-label="Opções de caixas na LOC">
+                {i.opcoes.map((o) => (
+                  <span key={o.caixas}><b>{fmtNum(o.caixas)} caixas</b> ({fmtNum(o.caixas * i.cxp)} un) → {fmtNum(Math.round(o.dias * 10) / 10)} dias</span>
                 ))}
-              </tbody>
-            </table>
-            <div className="grade" aria-label="Opções de caixas na LOC">
-              {i.opcoes.map((o) => (
-                <span key={o.caixas} style={o.dias < dias ? { borderColor: "var(--bad)" } : undefined}>
-                  <b>{fmtNum(o.caixas)} caixas</b> ({fmtNum(o.caixas * i.cxp)} un) → {fmtNum(Math.round(o.dias * 10) / 10)} dias
-                </span>
-              ))}
-            </div>
-            {i.sugestoes.length > 0 && <ul style={{ margin: "4px 0 8px 18px", padding: 0 }}>{i.sugestoes.map((t, k) => <li key={k}>{t}</li>)}</ul>}
+              </div>
+            )}
           </td>
         </tr>
       )}
