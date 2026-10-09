@@ -55,8 +55,10 @@ export async function lerArquivo(nomes: string[], ifNoneMatch?: string | null): 
   for (const nome of nomes) {
     const local = path.join(process.cwd(), "data", nome);
     try {
-      const [buf, st] = await Promise.all([fs.readFile(local), fs.stat(local)]);
-      return { buf, etag: String(st.mtimeMs), nome, atualizadoEm: st.mtime.toISOString(), fonte: "local" };
+      const st = await fs.stat(local);
+      const etag = String(st.mtimeMs);
+      if (ifNoneMatch && ifNoneMatch === etag) return { buf: null, etag, nome, atualizadoEm: st.mtime.toISOString(), fonte: "local" };
+      return { buf: await fs.readFile(local), etag, nome, atualizadoEm: st.mtime.toISOString(), fonte: "local" };
     } catch {
       /* tenta o próximo nome */
     }
