@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { Dados, Escopo, Linha } from "@/lib/types";
 import AnaliseRM from "@/components/AnaliseRM";
 import Bloqueios from "@/components/Bloqueios";
+import LayoutFr from "@/components/LayoutFr";
 import { NOME_AREA, NOME_DEPOSITO } from "@/lib/config";
 import { cmpVariante, csv, diasAte, fmtData, fmtDataHora, fmtNum, norm } from "@/lib/util";
 
@@ -52,7 +53,7 @@ function somar(a: Agregado, l: Linha) {
 }
 
 export default function Page() {
-  const [modulo, setModulo] = useState<"estoque" | "rm" | "bloqueios">("estoque");
+  const [modulo, setModulo] = useState<"estoque" | "rm" | "bloqueios" | "layout">("estoque");
   const [dados, setDados] = useState<Dados | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [carregando, setCarregando] = useState(true);
@@ -78,7 +79,7 @@ export default function Page() {
   // Abas visitadas continuam montadas (só escondidas): trocar de aba não busca os dados de novo
   // nem perde filtros/buscas. Cada módulo só é montado (e só baixa seus dados) na primeira visita.
   const [visitados, setVisitados] = useState<Record<string, boolean>>({ estoque: true });
-  const abrir = (m: "estoque" | "rm" | "bloqueios") => {
+  const abrir = (m: "estoque" | "rm" | "bloqueios" | "layout") => {
     setVisitados((v) => (v[m] ? v : { ...v, [m]: true }));
     setModulo(m);
   };
@@ -89,6 +90,7 @@ export default function Page() {
         <div className="seg" role="group" aria-label="Módulo">
           <button aria-pressed={modulo === "estoque"} onClick={() => abrir("estoque")}>Estoque</button>
           <button aria-pressed={modulo === "rm"} onClick={() => abrir("rm")}>Análise de RM</button>
+          <button aria-pressed={modulo === "layout"} onClick={() => abrir("layout")}>Layout do FR</button>
           <button aria-pressed={modulo === "bloqueios"} onClick={() => abrir("bloqueios")}>Bloqueios NAO ENCONTRADO</button>
         </div>
       </nav>
@@ -98,6 +100,11 @@ export default function Page() {
       {visitados.rm && (
         <div className="wrap" style={{ paddingTop: 12 }} hidden={modulo !== "rm"}>
           <AnaliseRM estoque={dados} />
+        </div>
+      )}
+      {visitados.layout && (
+        <div className="wrap" style={{ paddingTop: 12 }} hidden={modulo !== "layout"}>
+          <LayoutFr estoque={dados} />
         </div>
       )}
       {visitados.bloqueios && (
