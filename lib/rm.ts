@@ -7,7 +7,7 @@ export interface RmDados {
   arquivo: string;
   colunas: string[]; // cabeçalhos encontrados (para diagnóstico)
   faltando: string[]; // colunas obrigatórias que não foram achadas
-  resumo: { lidas: number; canceladas: number; semQtd: number; semCxp: number; semData: number; validas: number };
+  resumo: { lidas: number; canceladas: number; semQtd: number; semCxp: number; semData: number; validas: number; pisTotal: number; pisComLinhaSemCxp: number };
   pis: [string, string][]; // [PI, nomenclatura]
   rms: number; // nº de RMs distintas entre as linhas válidas
   p: number[]; // índice em `pis`
@@ -78,7 +78,7 @@ export function lerPedidos(buf: Buffer, meta: Pick<RmDados, "atualizadoEm" | "fo
     ...meta,
     colunas: [],
     faltando: [],
-    resumo: { lidas: 0, canceladas: 0, semQtd: 0, semCxp: 0, semData: 0, validas: 0 },
+    resumo: { lidas: 0, canceladas: 0, semQtd: 0, semCxp: 0, semData: 0, validas: 0, pisTotal: 0, pisComLinhaSemCxp: 0 },
     pis: [], rms: 0, p: [], r: [], d: [], q: [], c: [],
   };
   if (!aoa.length) return vazio;
@@ -95,6 +95,8 @@ export function lerPedidos(buf: Buffer, meta: Pick<RmDados, "atualizadoEm" | "fo
 
   const pisIdx = new Map<string, number>();
   const rmIdx = new Map<string, number>();
+  const pisTodos = new Set<string>();
+  const pisSemCxp = new Set<string>();
   const out = vazio;
   for (let i = 1; i < aoa.length; i++) {
     const row = aoa[i];
@@ -108,8 +110,9 @@ export function lerPedidos(buf: Buffer, meta: Pick<RmDados, "atualizadoEm" | "fo
     }
     const q = numSimples(row[idx.qtd]);
     if (!(q > 0)) { out.resumo.semQtd++; continue; }
+    pisTodos.add(pi);
     const c = numSimples(row[idx.cxp]);
-    if (!(c > 0)) { out.resumo.semCxp++; continue; }
+    if (!(c > 0)) { out.resumo.semCxp++; pisSemCxp.add(pi); continue; }
     const d = dia(row[idx.entrada]);
     if (!Number.isFinite(d)) { out.resumo.semData++; continue; }
 
@@ -128,5 +131,7 @@ export function lerPedidos(buf: Buffer, meta: Pick<RmDados, "atualizadoEm" | "fo
     out.resumo.validas++;
   }
   out.rms = rmIdx.size;
+  out.resumo.pisTotal = pisTodos.size;
+  out.resumo.pisComLinhaSemCxp = pisSemCxp.size;
   return out;
 }

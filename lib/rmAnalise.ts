@@ -253,3 +253,47 @@ export function calcReposicao(
   itens.sort((x, y) => peso[x.situacao] - peso[y.situacao] || x.cobertura - y.cobertura || y.media - x.media);
   return { itens, janelaDias, ultimoDia: ultimo };
 }
+
+/* ------------------------------------------------------------------ Diagnóstico */
+
+export interface Diagnostico {
+  pisTotal: number; // PIs distintos nos pedidos (sem cancelados)
+  semCxp: number; // PIs cujas linhas não têm CXP válido: não dá para classificar
+  cxpUm: number; // PIs com caixa padrão = 1 (todo pedido é múltiplo)
+  soCaixaFechada: number; // CXP > 1, mas nunca houve sobra
+  fracionadoHistorico: number; // PIs com ao menos 1 pedido fracionado em todo o histórico
+  foraDaJanela: number; // já tiveram fracionado, mas nenhum na janela da média
+  abaixoDoMinimo: number; // fracionado na janela, porém menos que o mínimo de pedidos
+  analisados: number; // entram na análise de reposição
+}
+
+export function diagnostico(rm: RmDados, params: ParamsRepo): Diagnostico {
+  let ultimo = -Infinity, primeiro = Infinity;
+  for (const d of rm.d) { if (d > ultimo) ultimo = d; if (d < primeiro) primeiro = d; }
+  const janelaDias = params.janela > 0 ? Math.min(params.janela, ultimo - primeiro + 1) : ultimo - primeiro + 1;
+  const dMin = ultimo - janelaDias + 1;
+  const n = rm.pis.length;
+  const todasCxp1 = new Array<boolean>(n).fill(true);
+  const fracTotal = new Array<number>(n).fill(0);
+  const fracJanela = new Array<number>(n).fill(0);
+  for (let i = 0; i < rm.p.length; i++) {
+    const p = rm.p[i];
+    if (rm.c[i] !== 1) todasCxp1[p] = false;
+    if (classificar(rm.q[i], rm.c[i]).grupo === 0) continue;
+    fracTotal[p]++;
+    if (rm.d[i] >= dMin) fracJanela[p]++;
+  }
+  const d: Diagnostico = {
+    pisTotal: rm.resumo.pisTotal,
+    semCxp: Math.max(0, rm.resumo.pisTotal - n),
+    cxpUm: 0, soCaixaFechada: 0, fracionadoHistorico: 0, foraDaJanela: 0, abaixoDoMinimo: 0, analisados: 0,
+  };
+  for (let p = 0; p < n; p++) {
+    if (fracTotal[p] === 0) { if (todasCxp1[p]) d.cxpUm++; else d.soCaixaFechada++; continue; }
+    d.fracionadoHistorico++;
+    if (fracJanela[p] === 0) d.foraDaJanela++;
+    else if (fracJanela[p] < params.minPedidos) d.abaixoDoMinimo++;
+    else d.analisados++;
+  }
+  return d;
+}
