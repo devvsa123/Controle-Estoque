@@ -1,6 +1,6 @@
 import { promises as fs } from "fs";
 import path from "path";
-import { get, put } from "@vercel/blob";
+import { BlobPreconditionFailedError, get, put } from "@vercel/blob";
 import { acharToken } from "./carregar";
 
 type Acesso = "public" | "private";
@@ -52,23 +52,33 @@ async function gravarJson<T>(nome: string, dados: T, etag: string | null): Promi
       return;
     } catch (e) {
       ultimoErro = e;
-      if (e instanceof Error && /precondition|etag|412|match/i.test(e.message)) throw new Conflito(e.message);
+      if (e instanceof BlobPreconditionFailedError || (e instanceof Error && /precondition|etag|412/i.test(e.message))) throw new Conflito(e.message);
     }
   }
   throw ultimoErro instanceof Error ? ultimoErro : new Error(`Falha ao gravar ${nome}`);
 }
 
-/** Lê, aplica `mutar` e grava; refaz se outra pessoa gravou no meio (ifMatch). `mutar` devolve false se nada mudou. */
+/**
+ * Lê, aplica `mutar` e grava com controle de concorrência (ifMatch).
+ * - etag diferente da tentativa anterior => outra pessoa gravou no meio: lê de novo e refaz.
+ * - MESMO etag falhando de novo => não é concorrência (a condição não é aceita): grava sem a condição.
+ * `mutar` devolve false se nada mudou.
+ */
 export async function atualizarJson<T>(nome: string, vazio: () => T, mutar: (d: T) => boolean): Promise<T> {
+  let etagQueFalhou: string | null = null;
+  let ultimoErro = "";
   for (let tentativa = 0; tentativa < 4; tentativa++) {
     const { dados, etag } = await lerJson(nome, vazio);
     if (!mutar(dados)) return dados;
+    const semCondicao = etag !== null && etag === etagQueFalhou;
     try {
-      await gravarJson(nome, dados, etag);
+      await gravarJson(nome, dados, semCondicao ? null : etag);
       return dados;
     } catch (e) {
       if (!(e instanceof Conflito)) throw e;
+      etagQueFalhou = etag;
+      ultimoErro = e.message;
     }
   }
-  throw new Error("Outra pessoa estava gravando ao mesmo tempo. Tente de novo.");
+  throw new Error(`Não consegui gravar ${nome} (conflito de escrita repetido). Detalhe técnico: ${ultimoErro}`);
 }
