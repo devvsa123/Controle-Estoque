@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import type { RmDados } from "@/lib/rm";
 import type { Dados } from "@/lib/types";
 import {
-  NOME_GRUPO, PARAMS_PADRAO, calcReposicao, estoquePorPi, visaoGeral,
+  NOME_GRUPO, PARAMS_PADRAO, calcReposicao, diagnostico, estoquePorPi, visaoGeral,
   type Alocacao, type ItemRepo, type ParamsRepo,
 } from "@/lib/rmAnalise";
 import { csv, fmtDataHora, fmtNum, norm } from "@/lib/util";
@@ -263,6 +263,7 @@ function Reposicao({ rm, estoque }: { rm: RmDados; estoque: Dados | null }) {
     });
   }, [itens, q, filtro]);
 
+  const diag = useMemo(() => diagnostico(rm, s.params), [rm, s.params]);
   const cont = useMemo(() => ({
     critico: itens.filter((i) => i.situacao === "critico").length,
     atencao: itens.filter((i) => i.situacao === "atencao").length,
@@ -327,6 +328,23 @@ function Reposicao({ rm, estoque }: { rm: RmDados; estoque: Dados | null }) {
         <div className="card kpi"><div className="v">{fmtNum(cont.loc)}</div><div className="l">PIs em que a LOC cheia não cobre a meta</div></div>
         <div className="card kpi"><div className="v">{fmtNum(itens.length)}</div><div className="l">PIs com demanda fracionada analisados</div></div>
       </div>
+
+      <details className="card">
+        <summary style={{ cursor: "pointer", fontWeight: 600 }}>Por que nem todos os PIs aparecem aqui? ({fmtNum(diag.analisados)} de {fmtNum(diag.pisTotal)} PIs analisados)</summary>
+        <table style={{ marginTop: 8 }}>
+          <tbody>
+            <tr><td>PIs distintos nos pedidos (sem cancelados)</td><td className="n">{fmtNum(diag.pisTotal)}</td></tr>
+            <tr><td>Sem caixa padrão (CXP) válida — não dá para saber se foram fracionados</td><td className="n">{fmtNum(diag.semCxp)}</td></tr>
+            <tr><td>Caixa padrão = 1 (unitária): todo pedido é múltiplo, nunca fraciona</td><td className="n">{fmtNum(diag.cxpUm)}</td></tr>
+            <tr><td>Caixa padrão &gt; 1, mas todos os pedidos foram de caixas fechadas</td><td className="n">{fmtNum(diag.soCaixaFechada)}</td></tr>
+            <tr><td><strong>Já tiveram pedido fracionado no histórico</strong></td><td className="n"><strong>{fmtNum(diag.fracionadoHistorico)}</strong></td></tr>
+            <tr><td>↳ nenhum fracionado na janela da média</td><td className="n">{fmtNum(diag.foraDaJanela)}</td></tr>
+            <tr><td>↳ fracionado na janela, mas menos que o mínimo de {s.params.minPedidos} pedido(s)</td><td className="n">{fmtNum(diag.abaixoDoMinimo)}</td></tr>
+            <tr><td>↳ <strong>analisados na reposição</strong></td><td className="n"><strong>{fmtNum(diag.analisados)}</strong></td></tr>
+          </tbody>
+        </table>
+        <p className="muted small">Aumente a janela da média ou reduza o mínimo de pedidos para incluir mais PIs.</p>
+      </details>
 
       <div className="card">
         <div className="bar" style={{ justifyContent: "space-between" }}>
