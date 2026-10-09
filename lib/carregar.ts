@@ -10,7 +10,7 @@ async function streamParaBuffer(stream: ReadableStream<Uint8Array>): Promise<Buf
 }
 
 /** O token pode ter prefixo próprio quando o store é conectado com outro nome (ex.: MEUSTORE_READ_WRITE_TOKEN). */
-function acharToken(): string | undefined {
+export function acharToken(): string | undefined {
   if (process.env.BLOB_READ_WRITE_TOKEN) return process.env.BLOB_READ_WRITE_TOKEN;
   const chave = Object.keys(process.env).find((k) => k.endsWith("_READ_WRITE_TOKEN") && process.env[k]);
   return chave ? process.env[chave] : undefined;

@@ -54,3 +54,7 @@ export const ARQUIVOS_RM = ["planilha_estoque.xls", "planilha_estoque.xlsx", "pl
 
 /** PIs com saldo nestes depósitos ficam fora da reposição do FR (o P04 tem gestão própria). */
 export const DEPOSITOS_FORA_REPOSICAO = ["P04"];
+
+/** Controle de tratativa dos bloqueios "NAO ENCONTRADO" (JSON compartilhado, gravado no Blob). */
+export const ARQUIVO_BLOQUEIOS = "controle-bloqueios-nao-encontrado.json";
+export const MOTIVO_NAO_ENCONTRADO = "NAO ENCONTRADO";
