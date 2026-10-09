@@ -30,6 +30,7 @@ export default function AnaliseRM({ estoque }: { estoque: Dados | null }) {
   const [erro, setErro] = useState<string | null>(null);
   const [carregando, setCarregando] = useState(true);
   const [sub, setSub] = useState<Sub>("geral");
+  const [visReposicao, setVisReposicao] = useState(false); // monta a reposição na 1ª visita e mantém (preserva filtros)
 
   async function carregar() {
     setCarregando(true);
@@ -79,7 +80,7 @@ export default function AnaliseRM({ estoque }: { estoque: Dados | null }) {
       <div className="bar" style={{ marginBottom: 0, justifyContent: "space-between" }}>
         <div className="seg" role="group" aria-label="Análise">
           <button aria-pressed={sub === "geral"} onClick={() => setSub("geral")}>Visão geral e grupos</button>
-          <button aria-pressed={sub === "reposicao"} onClick={() => setSub("reposicao")}>Reposição do FR</button>
+          <button aria-pressed={sub === "reposicao"} onClick={() => { setVisReposicao(true); setSub("reposicao"); }}>Reposição do FR</button>
         </div>
         <span className="muted small">
           {fmtNum(rm.resumo.validas)} linhas de pedido · arquivo de {fmtDataHora(rm.atualizadoEm)}{rm.fonte === "local" ? " (local)" : ""} ·{" "}
@@ -93,7 +94,8 @@ export default function AnaliseRM({ estoque }: { estoque: Dados | null }) {
           ? `; ${fmtNum(rm.resumo.semQtd + rm.resumo.semCxp + rm.resumo.semData)} linhas sem QTD/CXP/data válidos também foram ignoradas`
           : ""}.
       </p>
-      {sub === "geral" ? <Geral rm={rm} /> : <Reposicao rm={rm} estoque={estoque} />}
+      <div hidden={sub !== "geral"}><Geral rm={rm} /></div>
+      {visReposicao && <div hidden={sub !== "reposicao"}><Reposicao rm={rm} estoque={estoque} /></div>}
     </div>
   );
 }
