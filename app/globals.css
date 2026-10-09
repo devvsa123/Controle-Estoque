@@ -104,3 +104,4 @@ code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
 .hbar .val { white-space: nowrap; }
 .grid > * { min-width: 0; }
 [hidden] { display: none !important; }
+.seg { flex-wrap: wrap; }
