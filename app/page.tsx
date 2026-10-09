@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import type { Dados, Escopo, Linha } from "@/lib/types";
 import AnaliseRM from "@/components/AnaliseRM";
+import Bloqueios from "@/components/Bloqueios";
 import { NOME_AREA, NOME_DEPOSITO } from "@/lib/config";
 import { cmpVariante, csv, diasAte, fmtData, fmtDataHora, fmtNum, norm } from "@/lib/util";
 
@@ -51,7 +52,7 @@ function somar(a: Agregado, l: Linha) {
 }
 
 export default function Page() {
-  const [modulo, setModulo] = useState<"estoque" | "rm">("estoque");
+  const [modulo, setModulo] = useState<"estoque" | "rm" | "bloqueios">("estoque");
   const [dados, setDados] = useState<Dados | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [carregando, setCarregando] = useState(true);
@@ -80,13 +81,18 @@ export default function Page() {
         <div className="seg" role="group" aria-label="Módulo">
           <button aria-pressed={modulo === "estoque"} onClick={() => setModulo("estoque")}>Estoque</button>
           <button aria-pressed={modulo === "rm"} onClick={() => setModulo("rm")}>Análise de RM</button>
+          <button aria-pressed={modulo === "bloqueios"} onClick={() => setModulo("bloqueios")}>Bloqueios NAO ENCONTRADO</button>
         </div>
       </nav>
       {modulo === "estoque" ? (
         <EstoqueView dados={dados} erro={erro} carregando={carregando} carregar={carregar} />
-      ) : (
+      ) : modulo === "rm" ? (
         <div className="wrap" style={{ paddingTop: 12 }}>
           <AnaliseRM estoque={dados} />
+        </div>
+      ) : (
+        <div className="wrap" style={{ paddingTop: 12 }}>
+          <Bloqueios />
         </div>
       )}
     </>

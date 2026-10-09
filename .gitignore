@@ -7,3 +7,4 @@ next-env.d.ts
 # planilha real do estoque (dados internos) - usada só para desenvolvimento local
 data/*.xlsx
 data/*.xls
+data/*.json
