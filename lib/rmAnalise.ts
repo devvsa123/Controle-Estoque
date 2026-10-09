@@ -164,10 +164,13 @@ export function estoquePorPi(dados: Dados | null): Map<string, EstoquePi> {
   const m = new Map<string, EstoquePi>();
   if (!dados) return m;
   for (const l of dados.linhas) {
-    if (dados.escopos[l.dep] !== "estoque" || l.disp <= 0) continue;
+    if (dados.escopos[l.dep] !== "estoque") continue;
+    const foraReposicao = DEPOSITOS_FORA_REPOSICAO.includes(l.dep) && (l.disp > 0 || l.total > 0); // inclui só reservado/reposição
+    if (l.disp <= 0 && !foraReposicao) continue;
     let e = m.get(l.pi);
     if (!e) m.set(l.pi, (e = { fr: 0, sc: 0, locs: new Set(), bloq: 0, motivos: {}, noP04: false }));
-    if (DEPOSITOS_FORA_REPOSICAO.includes(l.dep)) e.noP04 = true;
+    if (foraReposicao) e.noP04 = true;
+    if (l.disp <= 0) continue;
     if (!l.livre) {
       e.bloq += l.disp;
       const mt = l.motivo || "SEM MOTIVO";
