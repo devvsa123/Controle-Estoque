@@ -1,5 +1,5 @@
 import type { RmDados } from "./rm";
-import { DEPOSITOS_FRACIONADOS } from "./config";
+import { DEPOSITOS_FORA_REPOSICAO } from "./config";
 import type { Dados } from "./types";
 
 /** Faixas da sobra fracionada em relação à caixa padrão. */
@@ -109,149 +109,153 @@ export function visaoGeral(rm: RmDados, f: Filtro): VisaoGeral {
 /* ------------------------------------------------------------ Reposição do FR */
 
 export interface ParamsRepo {
-  janela: number; // dias da média de consumo; 0 = todo o histórico
-  diasAlvo: number; // cobertura desejada no FR
+  janela: number; // dias usados só para a média de saída (informativa); 0 = todo o histórico
   caixasLoc: number; // caixas que cabem numa LOC FR (padrão para todo PI)
-  minPedidos: number; // mínimo de pedidos fracionados na janela para entrar na análise
 }
 
-export const PARAMS_PADRAO: ParamsRepo = { janela: 90, diasAlvo: 7, caixasLoc: 15, minPedidos: 2 };
+export const PARAMS_PADRAO: ParamsRepo = { janela: 90, caixasLoc: 15 };
 
+/** Alerta: todo PI que já teve fracionado precisa de pelo menos 1 caixa padrão no FR. */
 export type Situacao = "critico" | "atencao" | "ok";
-
-export interface ItemRepo {
-  pi: string;
-  desc: string;
-  cxp: number;
-  pedidosFr: number; // pedidos fracionados na janela
-  unidadesFr: number; // unidades consumidas do FR na janela
-  media: number; // unidades/dia
-  estFr: number;
-  estSc: number;
-  locsFr: number;
-  caixasLoc: number; // efetivo (padrão ou ajustado)
-  capacidade: number; // unidades que cabem no(s) LOC(s) FR
-  cobertura: number; // dias de cobertura atual no FR (Infinity se sem consumo)
-  coberturaMax: number; // dias que a LOC cheia duraria
-  situacao: Situacao;
-  locInsuficiente: boolean;
-  caixasNecessarias: number; // caixas para cobrir diasAlvo
-  caixasRepor: number; // sugestão limitada pelo espaço
-  faltaSc: boolean; // SC não tem o que precisa para repor
-  opcoes: { caixas: number; dias: number }[];
-  alocacoes: Alocacao[]; // cenários de alocação (7 e 11 dias)
-  sugestoes: string[];
-}
 
 export const DIAS_ALOCACAO = [7, 11];
 
 export interface Alocacao {
   dias: number;
-  caixas: number; // caixas para cobrir `dias`
+  caixas: number; // caixas para cobrir `dias` na média de saída
   locs: number; // LOCs FR necessárias
   distribuicao: number[]; // caixas em cada LOC (ex.: [15, 15, 8])
   locsNovas: number; // LOCs além das que o PI já ocupa
   repor: number; // caixas a trazer, descontado o que já está no FR
 }
 
-export interface EstoquePi { fr: number; sc: number; locs: Set<string> }
+export interface ItemRepo {
+  pi: string;
+  desc: string;
+  cxp: number;
+  pedidosFr: number; // pedidos fracionados em todo o histórico
+  ultimoFr: number; // dia do último pedido fracionado
+  media: number; // unidades/dia de sobra na janela (informativo)
+  estFr: number;
+  estSc: number;
+  bloq: number; // saldo bloqueado (depósitos de estoque)
+  motivosBloq: Record<string, number>;
+  locsFr: number;
+  caixasLoc: number; // efetivo (padrão ou ajustado)
+  cobertura: number; // dias de cobertura atual no FR pela média (Infinity se sem consumo)
+  situacao: Situacao;
+  caixasRepor: number; // 1 caixa quando o FR está abaixo de 1 caixa
+  scInsuficiente: boolean; // SC não tem 1 caixa para repor
+  opcoes: { caixas: number; dias: number }[];
+  alocacoes: Alocacao[];
+}
 
-/** Saldo LIVRE por PI: FR = área FR + todo o P04; SC = área SC. Só depósitos que contam como estoque. */
+export interface EstoquePi {
+  fr: number; // livre, área FR
+  sc: number; // livre, área SC
+  locs: Set<string>;
+  bloq: number;
+  motivos: Record<string, number>;
+  noP04: boolean; // tem saldo em depósito fora da reposição
+}
+
+/** Saldos por PI nos depósitos que contam como estoque. */
 export function estoquePorPi(dados: Dados | null): Map<string, EstoquePi> {
   const m = new Map<string, EstoquePi>();
   if (!dados) return m;
   for (const l of dados.linhas) {
-    if (dados.escopos[l.dep] !== "estoque" || !l.livre || l.disp <= 0) continue;
-    const ehFr = l.area === "FR" || DEPOSITOS_FRACIONADOS.includes(l.dep); // tudo no P04 é fracionado
-    if (!ehFr && l.area !== "SC") continue;
+    if (dados.escopos[l.dep] !== "estoque" || l.disp <= 0) continue;
     let e = m.get(l.pi);
-    if (!e) m.set(l.pi, (e = { fr: 0, sc: 0, locs: new Set() }));
-    if (ehFr) { e.fr += l.disp; e.locs.add(l.dep + "|" + l.end); } else e.sc += l.disp;
+    if (!e) m.set(l.pi, (e = { fr: 0, sc: 0, locs: new Set(), bloq: 0, motivos: {}, noP04: false }));
+    if (DEPOSITOS_FORA_REPOSICAO.includes(l.dep)) e.noP04 = true;
+    if (!l.livre) {
+      e.bloq += l.disp;
+      const mt = l.motivo || "SEM MOTIVO";
+      e.motivos[mt] = (e.motivos[mt] ?? 0) + l.disp;
+    } else if (l.area === "FR") {
+      e.fr += l.disp;
+      e.locs.add(l.dep + "|" + l.end);
+    } else if (l.area === "SC") e.sc += l.disp;
   }
   return m;
 }
 
-const fmt1 = (n: number) => n.toLocaleString("pt-BR", { maximumFractionDigits: 1 });
+export interface TotaisRepo {
+  fracionados: number; // PIs com ao menos 1 pedido fracionado no histórico
+  noP04: number; // ignorados por terem saldo no P04
+  semScSemBloq: number; // ignorados: SC zerado e nada bloqueado
+  visiveis: number;
+}
 
 export function calcReposicao(
   rm: RmDados,
   est: Map<string, EstoquePi>,
   params: ParamsRepo,
   caixasPorPi: Record<string, number>
-): { itens: ItemRepo[]; janelaDias: number; ultimoDia: number } {
+): { itens: ItemRepo[]; janelaDias: number; ultimoDia: number; totais: TotaisRepo } {
+  const totais: TotaisRepo = { fracionados: 0, noP04: 0, semScSemBloq: 0, visiveis: 0 };
   let ultimo = -Infinity, primeiro = Infinity;
   for (const d of rm.d) { if (d > ultimo) ultimo = d; if (d < primeiro) primeiro = d; }
-  if (!rm.d.length) return { itens: [], janelaDias: 0, ultimoDia: 0 };
+  if (!rm.d.length) return { itens: [], janelaDias: 0, ultimoDia: 0, totais };
   const span = ultimo - primeiro + 1;
   const janelaDias = params.janela > 0 ? Math.min(params.janela, span) : span;
   const dMin = ultimo - janelaDias + 1;
 
-  const acc = new Map<number, { n: number; un: number; cxpFreq: Map<number, number> }>();
+  // caixa padrão vigente = a da linha mais recente do PI
+  const cxpAtual = new Map<number, { dia: number; cxp: number }>();
+  const acc = new Map<number, { n: number; ultimo: number; sobraJanela: number }>();
   for (let i = 0; i < rm.p.length; i++) {
-    if (rm.d[i] < dMin) continue;
+    const p = rm.p[i];
+    const c = cxpAtual.get(p);
+    if (!c || rm.d[i] >= c.dia) cxpAtual.set(p, { dia: rm.d[i], cxp: rm.c[i] });
     const cl = classificar(rm.q[i], rm.c[i]);
     if (cl.grupo === 0) continue;
-    let a = acc.get(rm.p[i]);
-    if (!a) acc.set(rm.p[i], (a = { n: 0, un: 0, cxpFreq: new Map() }));
+    let a = acc.get(p);
+    if (!a) acc.set(p, (a = { n: 0, ultimo: -Infinity, sobraJanela: 0 }));
     a.n++;
-    a.un += cl.sobra; // o FR só é consumido pela sobra; as caixas fechadas saem do SC
-    a.cxpFreq.set(rm.c[i], (a.cxpFreq.get(rm.c[i]) ?? 0) + 1);
+    if (rm.d[i] > a.ultimo) a.ultimo = rm.d[i];
+    if (rm.d[i] >= dMin) a.sobraJanela += cl.sobra; // o FR só é consumido pela sobra
   }
 
   const itens: ItemRepo[] = [];
   for (const [p, a] of acc) {
-    if (a.n < params.minPedidos) continue;
+    totais.fracionados++;
     const [pi, desc] = rm.pis[p];
-    const cxp = [...a.cxpFreq.entries()].sort((x, y) => y[1] - x[1])[0][0];
     const e = est.get(pi);
-    const estFr = e?.fr ?? 0, estSc = e?.sc ?? 0;
+    if (e?.noP04) { totais.noP04++; continue; }
+    const estFr = e?.fr ?? 0, estSc = e?.sc ?? 0, bloq = e?.bloq ?? 0;
+    if (estSc <= 0 && bloq <= 0) { totais.semScSemBloq++; continue; }
+    totais.visiveis++;
+
+    const cxp = cxpAtual.get(p)!.cxp;
     const locsFr = Math.max(1, e?.locs.size ?? 0);
     const caixasLoc = caixasPorPi[pi] > 0 ? caixasPorPi[pi] : params.caixasLoc;
-    const capacidade = caixasLoc * cxp * locsFr;
-    const media = a.un / janelaDias;
+    const media = a.sobraJanela / janelaDias;
     const cobertura = media > 0 ? estFr / media : Infinity;
-    const coberturaMax = media > 0 ? capacidade / media : Infinity;
-    const locInsuficiente = coberturaMax < params.diasAlvo;
-    const caixasNecessarias = Math.ceil((params.diasAlvo * media) / cxp - 1e-9);
-    const falta = Math.max(0, params.diasAlvo * media - estFr);
-    const caixasPrecisa = Math.ceil(falta / cxp - 1e-9);
-    const espaco = Math.max(0, Math.floor((capacidade - estFr) / cxp + 1e-9));
-    const caixasRepor = Math.min(caixasPrecisa, espaco);
-    const situacao: Situacao = estFr <= 0 || cobertura < params.diasAlvo * 0.4 ? "critico" : cobertura < params.diasAlvo ? "atencao" : "ok";
-    const faltaSc = caixasRepor > 0 && estSc < caixasRepor * cxp;
+    const situacao: Situacao = estFr <= 0 ? "critico" : estFr < cxp ? "atencao" : "ok";
+    const caixasRepor = situacao === "ok" ? 0 : 1;
 
-    const opcoes = [...new Set([5, 10, 15, 20, 30, caixasNecessarias].filter((x) => x > 0))]
-      .sort((x, y) => x - y)
-      .map((caixas) => ({ caixas, dias: (caixas * cxp) / media }));
+    const opcoes = media > 0
+      ? [5, 10, 15, 20, 30].map((caixas) => ({ caixas, dias: (caixas * cxp) / media }))
+      : [];
+    const alocacoes: Alocacao[] = media > 0
+      ? DIAS_ALOCACAO.map((dias) => {
+          const caixas = Math.max(1, Math.ceil((dias * media) / cxp - 1e-9));
+          const locs = Math.ceil(caixas / caixasLoc);
+          const distribuicao = Array.from({ length: locs }, (_, k) => (k < locs - 1 ? caixasLoc : caixas - caixasLoc * (locs - 1)));
+          const repor = Math.max(0, Math.ceil((caixas * cxp - estFr) / cxp - 1e-9));
+          return { dias, caixas, locs, distribuicao, locsNovas: Math.max(0, locs - (e?.locs.size ?? 0)), repor };
+        })
+      : [];
 
-    const alocacoes: Alocacao[] = DIAS_ALOCACAO.map((dias) => {
-      const caixas = Math.max(1, Math.ceil((dias * media) / cxp - 1e-9));
-      const locs = Math.ceil(caixas / caixasLoc);
-      const distribuicao = Array.from({ length: locs }, (_, k) => (k < locs - 1 ? caixasLoc : caixas - caixasLoc * (locs - 1)));
-      const repor = Math.max(0, Math.ceil((caixas * cxp - estFr) / cxp - 1e-9));
-      return { dias, caixas, locs, distribuicao, locsNovas: Math.max(0, locs - (e?.locs.size ?? 0)), repor };
+    itens.push({
+      pi, desc, cxp, pedidosFr: a.n, ultimoFr: a.ultimo, media, estFr, estSc, bloq, motivosBloq: e?.motivos ?? {},
+      locsFr, caixasLoc, cobertura, situacao, caixasRepor, scInsuficiente: caixasRepor > 0 && estSc < cxp, opcoes, alocacoes,
     });
-
-    const sugestoes: string[] = [];
-    if (locInsuficiente) {
-      const locsNec = Math.ceil(caixasNecessarias / caixasLoc);
-      sugestoes.push(
-        `A LOC FR cheia (${caixasLoc} caixas = ${fmt1(capacidade)} un) dura só ${fmt1(coberturaMax)} dias; a meta é ${params.diasAlvo}.`,
-        `Opção A: ${locsNec} LOCs FR para este PI (${caixasNecessarias} caixas cobrem ${params.diasAlvo} dias).`,
-        coberturaMax >= 1
-          ? `Opção B: manter ${locsFr > 1 ? locsFr + " LOCs" : "1 LOC"} e recompletar a cada ${Math.floor(coberturaMax)} dia(s).`
-          : `Opção B: recompletar mais de uma vez por dia (consumo ≈ ${fmt1(media / cxp)} caixas/dia).`,
-        `Opção C: aumentar a LOC para ${Math.ceil(caixasNecessarias / locsFr)} caixas.`
-      );
-    }
-    if (caixasRepor > 0 && faltaSc) {
-      sugestoes.push(`Saldo livre em SC (${fmt1(estSc)} un) não cobre as ${caixasRepor} caixas sugeridas; verifique outras origens/recebimento.`);
-    }
-    itens.push({ pi, desc, cxp, pedidosFr: a.n, unidadesFr: a.un, media, estFr, estSc, locsFr, caixasLoc, capacidade, cobertura, coberturaMax, situacao, locInsuficiente, caixasNecessarias, caixasRepor, faltaSc, opcoes, alocacoes, sugestoes });
   }
   const peso = { critico: 0, atencao: 1, ok: 2 } as const;
-  itens.sort((x, y) => peso[x.situacao] - peso[y.situacao] || x.cobertura - y.cobertura || y.media - x.media);
-  return { itens, janelaDias, ultimoDia: ultimo };
+  itens.sort((x, y) => peso[x.situacao] - peso[y.situacao] || y.media - x.media || y.pedidosFr - x.pedidosFr);
+  return { itens, janelaDias, ultimoDia: ultimo, totais };
 }
 
 /* ------------------------------------------------------------------ Diagnóstico */
@@ -262,38 +266,22 @@ export interface Diagnostico {
   cxpUm: number; // PIs com caixa padrão = 1 (todo pedido é múltiplo)
   soCaixaFechada: number; // CXP > 1, mas nunca houve sobra
   fracionadoHistorico: number; // PIs com ao menos 1 pedido fracionado em todo o histórico
-  foraDaJanela: number; // já tiveram fracionado, mas nenhum na janela da média
-  abaixoDoMinimo: number; // fracionado na janela, porém menos que o mínimo de pedidos
-  analisados: number; // entram na análise de reposição
 }
 
-export function diagnostico(rm: RmDados, params: ParamsRepo): Diagnostico {
-  let ultimo = -Infinity, primeiro = Infinity;
-  for (const d of rm.d) { if (d > ultimo) ultimo = d; if (d < primeiro) primeiro = d; }
-  const janelaDias = params.janela > 0 ? Math.min(params.janela, ultimo - primeiro + 1) : ultimo - primeiro + 1;
-  const dMin = ultimo - janelaDias + 1;
+export function diagnostico(rm: RmDados): Diagnostico {
   const n = rm.pis.length;
   const todasCxp1 = new Array<boolean>(n).fill(true);
-  const fracTotal = new Array<number>(n).fill(0);
-  const fracJanela = new Array<number>(n).fill(0);
+  const frac = new Array<boolean>(n).fill(false);
   for (let i = 0; i < rm.p.length; i++) {
     const p = rm.p[i];
     if (rm.c[i] !== 1) todasCxp1[p] = false;
-    if (classificar(rm.q[i], rm.c[i]).grupo === 0) continue;
-    fracTotal[p]++;
-    if (rm.d[i] >= dMin) fracJanela[p]++;
+    if (classificar(rm.q[i], rm.c[i]).grupo !== 0) frac[p] = true;
   }
-  const d: Diagnostico = {
-    pisTotal: rm.resumo.pisTotal,
-    semCxp: Math.max(0, rm.resumo.pisTotal - n),
-    cxpUm: 0, soCaixaFechada: 0, fracionadoHistorico: 0, foraDaJanela: 0, abaixoDoMinimo: 0, analisados: 0,
-  };
+  const d: Diagnostico = { pisTotal: rm.resumo.pisTotal, semCxp: Math.max(0, rm.resumo.pisTotal - n), cxpUm: 0, soCaixaFechada: 0, fracionadoHistorico: 0 };
   for (let p = 0; p < n; p++) {
-    if (fracTotal[p] === 0) { if (todasCxp1[p]) d.cxpUm++; else d.soCaixaFechada++; continue; }
-    d.fracionadoHistorico++;
-    if (fracJanela[p] === 0) d.foraDaJanela++;
-    else if (fracJanela[p] < params.minPedidos) d.abaixoDoMinimo++;
-    else d.analisados++;
+    if (frac[p]) d.fracionadoHistorico++;
+    else if (todasCxp1[p]) d.cxpUm++;
+    else d.soCaixaFechada++;
   }
   return d;
 }
