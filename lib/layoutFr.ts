@@ -1,4 +1,4 @@
-import { DEPOSITOS_FORA_REPOSICAO } from "./config";
+import { DEPOSITOS_FORA_REPOSICAO, RUAS_FORA_LAYOUT_FR } from "./config";
 import type { RmDados } from "./rm";
 import { classificar } from "./rmAnalise";
 import type { Dados } from "./types";
@@ -31,17 +31,28 @@ export interface LayoutFr {
   pis: Map<string, PiFr>;
 }
 
-/** LOCs da área FR dos depósitos de estoque, exceto os fora da reposição (P04). */
+/** Rua = primeiro número do endereço (12-01-01-AA → 12). */
+export function ruaDe(end: string): string {
+  return end.split("-")[0].trim();
+}
+
+export function ruaForaDoLayout(dep: string, end: string): boolean {
+  const n = Number(ruaDe(end));
+  return Number.isFinite(n) && RUAS_FORA_LAYOUT_FR.some((r) => r.dep === dep && r.rua === n);
+}
+
+/** LOCs da área FR dos depósitos de estoque, exceto os fora da reposição (P04) e as ruas ignoradas (ex.: P02 rua 12). */
 export function montarLayout(dados: Dados, incluirBloqueados: boolean, deps: string[] = []): LayoutFr {
   const locs = new Map<string, LocFr>();
   for (const l of dados.linhas) {
     if (dados.escopos[l.dep] !== "estoque" || l.area !== "FR" || DEPOSITOS_FORA_REPOSICAO.includes(l.dep)) continue;
     if (deps.length && !deps.includes(l.dep)) continue;
+    if (ruaForaDoLayout(l.dep, l.end)) continue;
     if (!(l.disp > 0 || l.total > 0)) continue; // LOC sem nada
     if (!incluirBloqueados && !l.livre) continue;
     const k = l.dep + "|" + l.end;
     let loc = locs.get(k);
-    if (!loc) locs.set(k, (loc = { loc: k, dep: l.dep, end: l.end, rua: l.end.split("-")[0] || "—", itens: [], qtd: 0 }));
+    if (!loc) locs.set(k, (loc = { loc: k, dep: l.dep, end: l.end, rua: ruaDe(l.end) || "—", itens: [], qtd: 0 }));
     let it = loc.itens.find((x) => x.pi === l.pi);
     if (!it) loc.itens.push((it = { pi: l.pi, qtd: 0, bloq: 0, linhas: 0 }));
     it.qtd += l.disp;
