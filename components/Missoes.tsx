@@ -108,7 +108,7 @@ const REGRAS: Record<TipoMissao, string[]> = {
     "Padrão: cada PI com pedido fracionado tem uma LOC FR só dele, com no mínimo 1 caixa e no máximo 5 (calçados: no máximo 3, por serem caixas grandes).",
     "Quando a LOC do PI fica abaixo do mínimo, o sistema leva caixas fechadas de SC até cobrir alguns pedidos fracionados médios (parâmetro), sempre entre o mínimo e o máximo.",
     "A média por pedido é a média da quantidade fracionada por pedido (não por dia), porque a maioria dos itens é sazonal. A frequência mostra a cadência dos pedidos fracionados.",
-    "Cada LOC de SC comporta no máximo 15 caixas (calçado: 10): a devolução do FR respeita esse limite e, se a LOC encher, o resto vai para outra LOC SC do PI ou para uma LOC SC vazia informada.",
+    "Cada LOC de SC comporta no máximo 12 caixas (calçado: 10): a devolução do FR respeita esse limite e, se a LOC encher, o resto vai para outra LOC SC do PI ou para uma LOC SC vazia informada.",
     "Caixas de SC: mesmo paiol primeiro, depois a validade mais próxima (FEFO). Faltou LOC? Os PIs de menor saída vão para a zona de baixo giro (rua 01 do P02), com 2 caixas.",
   ],
   movimentacao: [

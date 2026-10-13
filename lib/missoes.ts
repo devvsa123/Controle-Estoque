@@ -84,7 +84,7 @@ export const PARAMS_PADRAO_MISSOES: Parametros = {
   minCaixas: 1,
   maxCaixasCalcado: 3,
   minCaixasCalcado: 1,
-  maxCaixasSc: 15,
+  maxCaixasSc: 12,
   maxCaixasScCalcado: 10,
   pedidosCobertura: 3,
   caixasZona: 2,
