@@ -282,6 +282,8 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
   const [origem, setOrigem] = useState<"" | "auto" | "manual">("");
   const [onda, setOnda] = useState<"" | "1" | "2">("");
   const [status, setStatus] = useState<"" | StatusMissao>("");
+  const [paiol, setPaiol] = useState("");
+  const [rua, setRua] = useState("");
   const [erro, setErro] = useState<string | null>(null);
   const [aberto, setAberto] = useState<string | null>(null);
   const [pag, setPag] = useState(0);
@@ -297,6 +299,14 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
     canceladas: missoes.filter((m) => m.status === "cancelada").length,
   }), [missoes]);
 
+  // Paiol e rua da ORIGEM (onde o estivador pega); a rua é o 1º número do endereço (12-01-01-AA → 12).
+  const ruaOrigem = (m: Missao) => String(parseInt(m.de.end.split("-")[0], 10));
+  const paiois = useMemo(() => [...new Set(missoes.map((m) => m.de.dep))].sort(), [missoes]);
+  const ruas = useMemo(
+    () => [...new Set(missoes.filter((m) => !paiol || m.de.dep === paiol).map(ruaOrigem))].sort((a, b) => Number(a) - Number(b)),
+    [missoes, paiol],
+  );
+
   const lista = useMemo(() => {
     const toks = norm(q).split(/\s+/).filter(Boolean);
     return missoes
@@ -304,9 +314,11 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
       .filter((m) => !origem || m.origem === origem)
       .filter((m) => !onda || String(m.onda) === onda)
       .filter((m) => !status || m.status === status)
+      .filter((m) => !paiol || m.de.dep === paiol)
+      .filter((m) => !rua || ruaOrigem(m) === rua)
       .filter((m) => !toks.length || toks.every((t) => norm(`${m.id} ${m.pi} ${m.desc} ${m.de.end} ${m.para.end} ${m.responsavel} ${m.obs} ${m.motivo}`).includes(t)));
-  }, [missoes, filtro, q, origem, onda, status]);
-  useEffect(() => setPag(0), [filtro, q, origem, onda, status, missoes.length]);
+  }, [missoes, filtro, q, origem, onda, status, paiol, rua]);
+  useEffect(() => setPag(0), [filtro, q, origem, onda, status, paiol, rua, missoes.length]);
   const pagina = lista.slice(pag * POR_PAGINA, (pag + 1) * POR_PAGINA);
   const paginas = Math.max(1, Math.ceil(lista.length / POR_PAGINA));
 
@@ -347,11 +359,13 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
           </div>
           <input type="search" placeholder="Buscar missão, PI, endereço, responsável…" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 220, flex: "1 1 220px" }} />
           <select value={onda} onChange={(e) => setOnda(e.target.value as typeof onda)} aria-label="Onda"><option value="">Todas as ondas</option><option value="1">Onda 1</option><option value="2">Onda 2</option></select>
+          <select value={paiol} onChange={(e) => { setPaiol(e.target.value); setRua(""); }} aria-label="Paiol de origem"><option value="">Todos os paióis</option>{paiois.map((d) => <option key={d} value={d}>{d}</option>)}</select>
+          <select value={rua} onChange={(e) => setRua(e.target.value)} aria-label="Rua de origem"><option value="">Todas as ruas</option>{ruas.map((r) => <option key={r} value={r}>Rua {r.padStart(2, "0")}</option>)}</select>
           <select value={status} onChange={(e) => setStatus(e.target.value as typeof status)} aria-label="Status"><option value="">Todos os status</option>{STATUS_MISSAO.map((s) => <option key={s.id} value={s.id}>{s.nome}</option>)}</select>
           <select value={origem} onChange={(e) => setOrigem(e.target.value as typeof origem)} aria-label="Origem da missão"><option value="">Automáticas e manuais</option><option value="auto">Só automáticas</option><option value="manual">Só manuais</option></select>
         </div>
         <div className="bar" style={{ justifyContent: "flex-end" }}>
-          <button className="btn" onClick={() => imprimir(`${NOME_TIPO[tipo]} — folha de missões`, lista, estoqueEm)} disabled={!lista.length} title="Abre a folha para imprimir, por onda e paiol, na ordem do caminho físico">🖨 Imprimir {fmtNum(lista.length)} missão(ões)</button>
+          <button className="btn" onClick={() => imprimir(`${NOME_TIPO[tipo]} — folha de missões${paiol ? ` · ${paiol}` : ""}${rua ? ` · rua ${rua.padStart(2, "0")}` : ""}`, lista, estoqueEm)} disabled={!lista.length} title="Abre a folha para imprimir, por onda e paiol, na ordem do caminho físico">🖨 Imprimir {fmtNum(lista.length)} missão(ões)</button>
           <button className="btn" onClick={exportar} disabled={!lista.length}>Exportar CSV</button>
           <button className="btn" onClick={recarregar} disabled={carregando}>{carregando ? "Atualizando…" : "Atualizar"}</button>
         </div>
