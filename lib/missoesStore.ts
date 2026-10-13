@@ -1,6 +1,7 @@
 import { atualizarJson, lerJson } from "./blobJson";
 import { ARQUIVO_MISSOES } from "./config";
-import { obterEstoque, obterRm } from "./fontes";
+import { obterEstoque, obterRm, obterVazios } from "./fontes";
+import type { Vazios } from "./vazios";
 import {
   ABERTA, EM_ANDAMENTO, PARAMS_PADRAO_MISSOES, STATUS_MISSAO, type Alerta, type AvisoValidacao, type Conformidade, type EstadoMissoes, type Local, type Missao, type Parametros, type StatusMissao,
 } from "./missoes";
@@ -8,8 +9,18 @@ import {
   alertasDoEstado, chaveLoc, conformidade, criarMissoes, efetivas, montarContexto, planejar, validarManual, verificarEstado, type EntradaManual, type Plano,
 } from "./missoesLogica";
 
-const vazio = (): EstadoMissoes => ({ versao: 2, seq: { R: 0, A: 0 }, missoes: {}, params: { ...PARAMS_PADRAO_MISSOES }, casas: {}, zona: {} });
+const vazio = (): EstadoMissoes => ({ versao: 3, seq: { R: 0, A: 0 }, missoes: {}, params: { ...PARAMS_PADRAO_MISSOES }, casas: {}, zona: {} });
 const mesclar = (p: Partial<Parametros> | undefined): Parametros => ({ ...PARAMS_PADRAO_MISSOES, ...(p ?? {}) });
+
+/** Parâmetros usados no planejamento: as LOCs vazias da consulta do WMS somam-se às informadas à mão (nada disso é gravado nos parâmetros). */
+function comVazios(p: Parametros, v: Vazios): Parametros {
+  const uniao = (a: Local[], b: Local[]) => {
+    const vistos = new Set<string>(), out: Local[] = [];
+    for (const l of [...a, ...b]) { const k = chaveLoc(l); if (!vistos.has(k)) { vistos.add(k); out.push(l); } }
+    return out;
+  };
+  return { ...p, locsVazias: uniao(p.locsVazias, v.fr), locsVaziasSc: uniao(p.locsVaziasSc, v.sc) };
+}
 
 export interface RespostaMissoes {
   missoes: Missao[];
@@ -20,33 +31,56 @@ export interface RespostaMissoes {
   rmErro: string | null;
   estoqueEm: string | null;
   geradoEm: string;
+  vazios: { fr: number; sc: number; arquivo: string | null; atualizadoEm: string | null; erro: string | null };
 }
 
-/** Migra o estado da primeira versão (lógica por média de dias): missões automáticas antigas são encerradas. */
-function migrar(e: EstadoMissoes, agora: string): boolean {
-  if ((e as { versao: number }).versao === 2) return false;
+/** Cancela as missões automáticas ainda pendentes (nada foi iniciado): o planejamento seguinte as refaz do zero. */
+function cancelarPendentesAuto(e: EstadoMissoes, agora: string, motivo: string): number {
+  let n = 0;
   for (const m of Object.values(e.missoes)) {
-    if (m.origem === "auto" && (m.status === "pendente" || m.status === "em_execucao")) {
-      m.status = "cancelada"; m.motivoCancelamento = "Substituída pela nova lógica de endereçamento (mín./máx. de caixas por LOC)"; m.atualizadoEm = agora;
-    }
-    m.onda = m.onda ?? 1; m.verificadaEm = m.verificadaEm ?? null; m.nota = m.nota ?? ""; m.baseEm = m.baseEm ?? ""; m.baseOrigem = m.baseOrigem ?? 0; m.baseDestino = m.baseDestino ?? 0;
+    if (m.origem === "auto" && m.status === "pendente") { m.status = "cancelada"; m.motivoCancelamento = motivo; m.atualizadoEm = agora; n++; }
   }
-  e.params = mesclar(undefined);
-  (e as { versao: number }).versao = 2;
+  return n;
+}
+
+/** Migra versões antigas: v1 (lógica por média de dias) e v2 (antes dos limites de caixas no SC e das LOCs vazias do WMS). */
+function migrar(e: EstadoMissoes, agora: string): boolean {
+  const v = (e as { versao: number }).versao;
+  if (v === 3) return false;
+  if (v < 2) {
+    for (const m of Object.values(e.missoes)) {
+      if (m.origem === "auto" && m.status === "em_execucao") { m.status = "cancelada"; m.motivoCancelamento = "Substituída pela nova lógica de endereçamento (mín./máx. de caixas por LOC)"; m.atualizadoEm = agora; }
+      m.onda = m.onda ?? 1; m.verificadaEm = m.verificadaEm ?? null; m.nota = m.nota ?? ""; m.baseEm = m.baseEm ?? ""; m.baseOrigem = m.baseOrigem ?? 0; m.baseDestino = m.baseDestino ?? 0;
+    }
+    e.params = mesclar(undefined);
+  }
+  cancelarPendentesAuto(e, agora, "Refeita: limites de caixas por LOC (FR e SC) e LOCs vazias do WMS passaram a valer");
+  (e as { versao: number }).versao = 3;
   return true;
+}
+
+/** Botão "Refazer missões pendentes": cancela as automáticas pendentes e replaneja com a planilha atual. */
+export async function refazerPendentes(): Promise<number> {
+  let n = 0;
+  await atualizarJson(ARQUIVO_MISSOES, vazio, (e) => {
+    n = cancelarPendentesAuto(e, new Date().toISOString(), "Refeita a pedido: o plano foi recalculado com a planilha atual");
+    return n > 0;
+  });
+  return n;
 }
 
 /** Carrega o estado, verifica as missões contra a planilha, planeja o que falta e devolve tudo com os alertas. */
 export async function sincronizarEListar(): Promise<RespostaMissoes> {
   const dados = await obterEstoque();
   const { rm, erro: rmErro } = await obterRm();
+  const vazios = await obterVazios();
   const agora = new Date().toISOString();
 
   const estado = await atualizarJson(ARQUIVO_MISSOES, vazio, (e) => {
     const migrou = migrar(e, agora);
     let mudou = migrou;
     e.params = mesclar(e.params);
-    const ctx = montarContexto(dados, rm, e.params);
+    const ctx = montarContexto(dados, rm, comVazios(e.params, vazios));
     if (migrou) {
       // missões da versão anterior que seguem abertas (as manuais): a "foto" de base passa a ser a planilha atual
       for (const m of Object.values(e.missoes)) {
@@ -69,7 +103,7 @@ export async function sincronizarEListar(): Promise<RespostaMissoes> {
   estado.params = mesclar(estado.params);
 
   // Segunda passada, já com as missões criadas, para os alertas e indicadores
-  const ctx = montarContexto(dados, rm, estado.params);
+  const ctx = montarContexto(dados, rm, comVazios(estado.params, vazios));
   const lista = Object.values(estado.missoes);
   const conf = conformidade(ctx);
   const alertas: Alerta[] = [];
@@ -86,6 +120,7 @@ export async function sincronizarEListar(): Promise<RespostaMissoes> {
   return {
     missoes: lista.sort((a, b) => a.onda - b.onda || a.prioridade - b.prioridade || a.id.localeCompare(b.id)),
     params: estado.params, alertas, conformidade: conf, resumo, rmErro, estoqueEm: dados.atualizadoEm, geradoEm: agora,
+    vazios: { fr: vazios.fr.length, sc: vazios.sc.length, arquivo: vazios.arquivo, atualizadoEm: vazios.atualizadoEm, erro: vazios.erro },
   };
 }
 
@@ -136,7 +171,7 @@ export async function criarManual(entrada: EntradaManual, forcar: boolean): Prom
   const dados = await obterEstoque();
   const { rm } = await obterRm();
   const { dados: atual } = await lerJson(ARQUIVO_MISSOES, vazio);
-  const ctx = montarContexto(dados, rm, mesclar(atual.params));
+  const ctx = montarContexto(dados, rm, comVazios(mesclar(atual.params), await obterVazios()));
   const { avisos, qtd } = validarManual(e, ctx, Object.values(atual.missoes));
   if (avisos.some((a) => a.nivel === "erro")) throw new AvisosError(avisos, true);
   if (avisos.length && !forcar) throw new AvisosError(avisos, false);

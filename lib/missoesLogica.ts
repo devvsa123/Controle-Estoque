@@ -1,6 +1,7 @@
 import { CALCADOS_PRIMEIRA_PALAVRA, DEPOSITOS_FORA_REPOSICAO, ZONA_BAIXO_GIRO } from "./config";
 import { demandaFracionada, type DemandaFr } from "./demandaFr";
 import { montarLayout, ruaDe, ruaForaDoLayout } from "./layoutFr";
+import { chaveRota } from "./rota";
 import type { RmDados } from "./rm";
 import { estoquePorPi } from "./rmAnalise";
 import type { Dados, Linha } from "./types";
@@ -70,7 +71,8 @@ export interface Proposta extends Omit<Missao, "id" | "origem" | "status" | "cri
 
 /* ------------------------------------------------------------------ contexto */
 
-export function montarContexto(dados: Dados, rm: RmDados | null, params: Parametros): Contexto {
+export function montarContexto(dados: Dados, rm: RmDados | null, paramsEntrada: Parametros): Contexto {
+  let params = paramsEntrada;
   const linhasSc = new Map<string, Linha[]>();
   const ocupFr = new Map<string, Set<string>>();
   const livreLoc = new Map<string, number>();
@@ -90,6 +92,12 @@ export function montarContexto(dados: Dados, rm: RmDados | null, params: Paramet
     livrePorId.set(l.id, (livrePorId.get(l.id) ?? 0) + l.disp);
     if (l.area === "SC") (linhasSc.get(l.pi) ?? linhasSc.set(l.pi, []).get(l.pi)!).push(l);
   }
+  // LOC "vazia" informada que na planilha tem saldo em SC (ou, no caso de SC, qualquer saldo) não está vazia: descarta
+  params = {
+    ...paramsEntrada,
+    locsVazias: paramsEntrada.locsVazias.filter((v) => !areasLoc.get(v.dep + "|" + v.end)?.has("SC")),
+    locsVaziasSc: paramsEntrada.locsVaziasSc.filter((v) => !areasLoc.has(v.dep + "|" + v.end)),
+  };
   const dem = demandaFracionada(rm);
   const calcado = (pi: string) => CALCADOS_PRIMEIRA_PALAVRA.includes((dados.produtos[pi]?.desc ?? "").trim().split(/\s+/)[0]?.toUpperCase());
   const limites = (pi: string): Limites | null => {
@@ -127,7 +135,7 @@ function montarSim(ctx: Contexto, extras: string[] = []): Sim {
   }
   for (const v of ctx.params.locsVazias) {
     const k = chaveLoc(v);
-    if (ctx.dados.escopos[v.dep] === "estoque" && !DEPOSITOS_FORA_REPOSICAO.includes(v.dep) && !ruaForaDoLayout(v.dep, v.end) && !sim.has(k)) sim.set(k, new Map());
+    if (ctx.dados.escopos[v.dep] === "estoque" && !DEPOSITOS_FORA_REPOSICAO.includes(v.dep) && !ruaForaDoLayout(v.dep, v.end) && !sim.has(k) && !ctx.areasLoc.get(k)?.has("SC")) sim.set(k, new Map());
   }
   return sim;
 }
@@ -272,11 +280,23 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   };
   const ocupadasSc = new Set<string>();
   for (const [k, ar] of ctx.areasLoc) if (ar.has("SC")) ocupadasSc.add(k);
-  const vaziasScLivres = () => params.locsVaziasSc.map(chaveLoc).filter((x) => !ocupadasSc.has(x) && !scOcup.has(x));
+  // LOCs SC já escolhidas para um PI (missões em andamento ou esta rodada): ele continua enchendo a mesma, em vez de abrir outra vazia
+  const alvoEfetSc = new Set<string>();
+  const scNovasDoPi = new Map<string, string[]>();
+  for (const m of efet) if (m.tipo === "movimentacao" && !ctx.areasLoc.get(chaveLoc(m.para))?.has("FR") && !ocupadasSc.has(chaveLoc(m.para)) && params.locsVaziasSc.some((v) => chaveLoc(v) === chaveLoc(m.para))) {
+    alvoEfetSc.add(chaveLoc(m.para));
+    const l = scNovasDoPi.get(m.pi) ?? scNovasDoPi.set(m.pi, []).get(m.pi)!;
+    if (!l.includes(chaveLoc(m.para))) l.push(chaveLoc(m.para));
+  }
+  const ruaDeLoc = (k: string) => k.split("|")[1]?.split("-")[0] ?? "";
+  const vaziasScLivres = (depOrigem = "", ruaOrigem = "") =>
+    params.locsVaziasSc.map(chaveLoc).filter((x) => !ctx.areasLoc.has(x) && !scOcup.has(x) && !alvoEfetSc.has(x))
+      .sort((a, b) => Number(locDe(b).dep === depOrigem) - Number(locDe(a).dep === depOrigem) || Number(ruaDeLoc(b) === ruaOrigem) - Number(ruaDeLoc(a) === ruaOrigem) || (chaveRota(a) < chaveRota(b) ? -1 : 1));
   /** Distribui `caixas` entre as LOCs SC do PI (mesmo paiol primeiro) e, se faltar espaço, LOCs SC vazias; respeita a capacidade. */
-  const alocarSc = (pi: string, depOrigem: string, caixas: number): { k: string; cx: number }[] => {
+  const alocarSc = (pi: string, depOrigem: string, origemKey: string, caixas: number): { k: string; cx: number }[] => {
     const proprias = locsScDoPi(pi).sort((a, b) => Number(locDe(b).dep === depOrigem) - Number(locDe(a).dep === depOrigem));
-    const cands = [...proprias, ...vaziasScLivres()];
+    const ruaOrigem = ruaDeLoc(origemKey);
+    const cands = [...new Set([...proprias, ...(scNovasDoPi.get(pi) ?? []), ...vaziasScLivres(depOrigem, ruaOrigem)])];
     const out: { k: string; cx: number }[] = [];
     let falta = caixas;
     for (const k of cands) {
@@ -285,11 +305,12 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
       if (cx <= 0) continue;
       out.push({ k, cx });
       scOcup.set(k, ocupSc(k) + cx);
+      if (!ocupadasSc.has(k)) { const l = scNovasDoPi.get(pi) ?? scNovasDoPi.set(pi, []).get(pi)!; if (!l.includes(k)) l.push(k); }
       falta -= cx;
     }
     return out;
   };
-  const podeDevolverSc = (pi: string) => !!ctx.dem.get(pi)?.cxp && (locsScDoPi(pi).some((k) => roomSc(pi, k) > 0) || vaziasScLivres().length > 0);
+  const podeDevolverSc = (pi: string) => !!ctx.dem.get(pi)?.cxp && (locsScDoPi(pi).some((k) => roomSc(pi, k) > 0) || (scNovasDoPi.get(pi) ?? []).some((k) => roomSc(pi, k) > 0) || vaziasScLivres().length > 0);
 
   // ---- 2) quem ainda não tem casa: LOC livre de menor custo; senão, zona de baixo giro
   const preferDep = (pi: string) => {
@@ -380,7 +401,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     const disponivel = sim.get(k)?.get(pi)?.qtd ?? 0;
     const caixas = Math.floor(Math.min(qtd, disponivel) / cxp + EPS);
     if (caixas <= 0) { soltas.push(`${nome(pi)} (${fmt(Math.min(qtd, disponivel))} un soltas, menos de 1 caixa de ${fmt(cxp)}, em ${loc})`); return false; }
-    const alocs = alocarSc(pi, locDe(k).dep, caixas);
+    const alocs = alocarSc(pi, locDe(k).dep, k, caixas);
     const alocadas = alocs.reduce((t, x) => t + x.cx, 0);
     if (alocadas < caixas) semDestinoSc.push(`${nome(pi)} (${caixas - alocadas} de ${caixas} caixa(s) em ${loc}: LOCs SC cheias — máx. ${maxSc(pi)} cx)`);
     for (const { k: sc, cx } of alocs) {
@@ -645,7 +666,9 @@ export function verificarEstado(estado: EstadoMissoes, ctx: Contexto, agora: str
     }
     return v;
   };
-  const destinoSc = (m: Missao) => { const ar = ctx.areasLoc.get(chaveLoc(m.para)); return !ar?.has("FR") && !!ar?.has("SC"); };
+  // destino SC = não é FR (nem LOC FR vazia, nem casa/zona conhecida de algum PI)
+  const locsFr = new Set([...ctx.params.locsVazias.map(chaveLoc), ...Object.values(estado.casas ?? {}), ...Object.values(estado.zona ?? {})]);
+  const destinoSc = (m: Missao) => !ctx.areasLoc.get(chaveLoc(m.para))?.has("FR") && !locsFr.has(chaveLoc(m.para));
   for (const m of Object.values(estado.missoes).filter((x) => x.origem === "auto" && x.status === "pendente" && x.tipo === "movimentacao" && destinoSc(x)).sort((a, b) => (a.id < b.id ? -1 : 1))) {
     const c = ctx.dem.get(m.pi)?.cxp;
     if (!c) continue;

@@ -22,6 +22,7 @@ interface Resposta {
   rmErro: string | null;
   estoqueEm: string | null;
   geradoEm: string;
+  vazios: { fr: number; sc: number; arquivo: string | null; atualizadoEm: string | null; erro: string | null };
 }
 
 interface Ctx {
@@ -140,7 +141,7 @@ export function MissoesTipo({ tipo, estoque }: { tipo: TipoMissao; estoque: Dado
       <Carga>
         {(d) => (
           <>
-            <Parametrologia tipo={tipo} params={d.params} resumo={d.resumo} />
+            <Parametrologia tipo={tipo} params={d.params} resumo={d.resumo} vazios={d.vazios} />
             {d.rmErro && <div className="note">Missões automáticas desativadas: {d.rmErro}. As manuais continuam funcionando.</div>}
             {sub === "lista" ? <Lista tipo={tipo} missoes={d.missoes.filter((m) => m.tipo === tipo)} geradoEm={d.geradoEm} estoqueEm={d.estoqueEm} /> : <Manual tipo={tipo} estoque={estoque} onCriada={() => setSub("lista")} />}
           </>
@@ -152,7 +153,7 @@ export function MissoesTipo({ tipo, estoque }: { tipo: TipoMissao; estoque: Dado
 
 /* --------------------------------------------------------------------- parâmetros */
 
-function Parametrologia({ tipo, params, resumo }: { tipo: TipoMissao; params: Parametros; resumo: ResumoPlano | null }) {
+function Parametrologia({ tipo, params, resumo, vazios }: { tipo: TipoMissao; params: Parametros; resumo: ResumoPlano | null; vazios: Resposta["vazios"] }) {
   const { post, recarregar } = usar();
   const [p, setP] = useState(params);
   const texto = (l: { dep: string; end: string }[]) => l.map((x) => `${x.dep} ${x.end}`).join("\n");
@@ -201,6 +202,10 @@ function Parametrologia({ tipo, params, resumo }: { tipo: TipoMissao; params: Pa
     <details className="card">
       <summary style={{ cursor: "pointer", fontWeight: 600 }}>Regras e parâmetros (compartilhados por todos)</summary>
       <ul style={{ margin: "8px 0 8px 18px", padding: 0 }}>{REGRAS[tipo].map((t) => <li key={t}>{t}</li>)}</ul>
+      <p className="small" style={{ margin: "4px 0 8px" }}>
+        <strong>LOCs vazias (consulta do WMS):</strong>{" "}
+        {vazios.erro ? <span style={{ color: "var(--bad)" }}>{vazios.erro}</span> : <>{fmtNum(vazios.fr)} FR e {fmtNum(vazios.sc)} SC lidas de “{vazios.arquivo}” ({vazios.atualizadoEm ? fmtDataHora(vazios.atualizadoEm) : "—"}). Paióis P03, P33, REC, P04, P07 e P06 ficam de fora.</>}
+      </p>
       {resumo && (
         <p className="small" style={{ margin: "4px 0 8px" }}>
           <strong>Plano atual:</strong> {fmtNum(resumo.ativos)} PIs com pedido fracionado · {fmtNum(resumo.comCasa)} com LOC própria · {fmtNum(resumo.naZona)} na zona de baixo giro · {fmtNum(resumo.semLugar)} sem lugar.
@@ -370,6 +375,13 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
         <div className="bar" style={{ justifyContent: "flex-end" }}>
           <button className="btn" onClick={() => imprimir(`${NOME_TIPO[tipo]} — folha de missões${paiol ? ` · ${paiol}` : ""}${rua ? ` · rua ${rua.padStart(2, "0")}` : ""}`, lista, estoqueEm)} disabled={!lista.length} title="Abre a folha para imprimir, por onda e paiol, na ordem do caminho físico">🖨 Imprimir {fmtNum(lista.length)} missão(ões)</button>
           <button className="btn" onClick={exportar} disabled={!lista.length}>Exportar CSV</button>
+          <button className="btn" disabled={carregando} title="Cancela as missões automáticas ainda pendentes e refaz o plano com a planilha atual (missões em execução, feitas e manuais não são mexidas)" onClick={async () => {
+            if (!window.confirm("Cancelar todas as missões automáticas ainda PENDENTES (desta e da outra aba) e refazer o plano com a planilha atual? Missões em execução, feitas e manuais não são alteradas.")) return;
+            setErro(null);
+            const r = await post({ acao: "refazer" });
+            if (!r.ok) { setErro(r.json.erro || "Falha ao refazer"); return; }
+            await recarregar();
+          }}>♻ Refazer missões pendentes</button>
           <button className="btn" onClick={recarregar} disabled={carregando}>{carregando ? "Atualizando…" : "Atualizar"}</button>
         </div>
         <div className="tablewrap">
