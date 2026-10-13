@@ -69,6 +69,8 @@ export interface Parametros {
   minCaixas: number; // mínimo: abaixo disso recompleta
   maxCaixasCalcado: number;
   minCaixasCalcado: number;
+  maxCaixasSc: number; // capacidade de uma LOC de SC (caixas fechadas)
+  maxCaixasScCalcado: number;
   pedidosCobertura: number; // quantos pedidos fracionados "médios" o recompletamento deve cobrir
   caixasZona: number; // caixas de cada PI na zona de baixo giro (rua 01 do P02)
   pisPorLocZona: number; // quantos PIs cabem em uma LOC da zona
@@ -82,6 +84,8 @@ export const PARAMS_PADRAO_MISSOES: Parametros = {
   minCaixas: 1,
   maxCaixasCalcado: 3,
   minCaixasCalcado: 1,
+  maxCaixasSc: 15,
+  maxCaixasScCalcado: 10,
   pedidosCobertura: 3,
   caixasZona: 2,
   pisPorLocZona: 4,
