@@ -629,6 +629,32 @@ export function verificarEstado(estado: EstadoMissoes, ctx: Contexto, agora: str
     mudou = true;
   }
 
+  // 2) capacidade das LOCs de SC: missão automática ainda pendente que levaria o SC além do máximo (ex.: criada antes do limite existir
+  //    ou com a LOC SC enchendo desde então) é cancelada; o planejamento seguinte busca outra LOC SC com espaço.
+  const ocup = new Map<string, number>();
+  const ocupAtual = (k: string) => {
+    let v = ocup.get(k);
+    if (v === undefined) {
+      v = 0;
+      for (const [p, q] of ctx.scQtd.get(k) ?? []) { const c = ctx.dem.get(p)?.cxp; if (c) v += q / c; }
+      for (const m of Object.values(estado.missoes)) {
+        const c = ctx.dem.get(m.pi)?.cxp;
+        if (c && EM_ANDAMENTO(m.status) && m.status !== "pendente" && m.tipo === "movimentacao" && chaveLoc(m.para) === k) v += m.qtd / c;
+      }
+      ocup.set(k, v);
+    }
+    return v;
+  };
+  const destinoSc = (m: Missao) => { const ar = ctx.areasLoc.get(chaveLoc(m.para)); return !ar?.has("FR") && !!ar?.has("SC"); };
+  for (const m of Object.values(estado.missoes).filter((x) => x.origem === "auto" && x.status === "pendente" && x.tipo === "movimentacao" && destinoSc(x)).sort((a, b) => (a.id < b.id ? -1 : 1))) {
+    const c = ctx.dem.get(m.pi)?.cxp;
+    if (!c) continue;
+    const k = chaveLoc(m.para), lim = ctx.ehCalcado(m.pi) ? ctx.params.maxCaixasScCalcado : ctx.params.maxCaixasSc, cx = m.qtd / c;
+    if (ocupAtual(k) + cx > lim + EPS) {
+      m.status = "cancelada"; m.motivoCancelamento = `Automático: a LOC SC ${m.para.end} já tem ${Math.round(ocupAtual(k) * 10) / 10} caixa(s) e o limite é ${lim}.`; m.atualizadoEm = agora; mudou = true;
+    } else ocup.set(k, ocupAtual(k) + cx);
+  }
+
   return mudou;
 }
 
