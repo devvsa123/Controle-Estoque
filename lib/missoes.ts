@@ -95,7 +95,7 @@ export const PARAMS_PADRAO_MISSOES: Parametros = {
 };
 
 export interface EstadoMissoes {
-  versao: 2;
+  versao: 3;
   seq: { R: number; A: number };
   missoes: Record<string, Missao>;
   params: Parametros;

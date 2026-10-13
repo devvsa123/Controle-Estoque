@@ -1,5 +1,5 @@
 import { jsonGzip } from "@/lib/gzip";
-import { AvisosError, alterarMissao, criarManual, salvarParametros, sincronizarEListar } from "@/lib/missoesStore";
+import { AvisosError, alterarMissao, criarManual, refazerPendentes, salvarParametros, sincronizarEListar } from "@/lib/missoesStore";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -20,6 +20,8 @@ export async function POST(req: Request) {
         return jsonGzip({ missao: await alterarMissao(String(b.id), b.campos ?? {}) });
       case "manual":
         return jsonGzip({ missao: await criarManual(b.missao, Boolean(b.forcar)) });
+      case "refazer":
+        return jsonGzip({ canceladas: await refazerPendentes() });
       case "params":
         return jsonGzip({ params: await salvarParametros(b.params ?? {}) });
       default:

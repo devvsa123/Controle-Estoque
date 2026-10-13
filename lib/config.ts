@@ -62,6 +62,10 @@ export const MOTIVO_NAO_ENCONTRADO = "NAO ENCONTRADO";
 /** LOCs FR que a análise de layout desconsidera: paiol + rua (1º número do endereço, ex.: 12-01-01-AA = rua 12). */
 export const RUAS_FORA_LAYOUT_FR: { dep: string; rua: number }[] = [{ dep: "P02", rua: 12 }];
 
+/** Consulta de endereços vazios do WMS (Blob): LOCs livres usadas pelas missões. Paióis abaixo ficam fora. */
+export const ARQUIVOS_VAZIOS = ["enderecos-vazios.xlsx", "Consulta_Enderecos_Vazios.xlsx", "Consulta_Endere_os_Vazios.xlsx", "Consulta_Endereços_Vazios.xlsx"];
+export const DEPOSITOS_FORA_VAZIOS = ["P03", "P33", "REC", "P04", "P07", "P06"];
+
 /** Missões de reposição/movimentação do FR (JSON compartilhado, gravado no Blob). */
 export const ARQUIVO_MISSOES = "controle-missoes.json";
 
