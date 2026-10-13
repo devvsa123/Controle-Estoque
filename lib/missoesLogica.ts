@@ -58,6 +58,7 @@ export interface Contexto {
   livreLoc: Map<string, number>; // "pi|dep|end" → saldo livre
   livrePorId: Map<string, number>; // ID_QUANT → saldo livre
   areasLoc: Map<string, Set<string>>;
+  scQtd: Map<string, Map<string, number>>; // LOC SC → PI → saldo total (qualquer status), para a capacidade em caixas
   produtoDesc: (pi: string) => string;
   ehCalcado: (pi: string) => boolean;
   limites: (pi: string) => Limites | null;
@@ -75,11 +76,13 @@ export function montarContexto(dados: Dados, rm: RmDados | null, params: Paramet
   const livreLoc = new Map<string, number>();
   const livrePorId = new Map<string, number>();
   const areasLoc = new Map<string, Set<string>>();
+  const scQtd = new Map<string, Map<string, number>>();
   for (const l of dados.linhas) {
     if (dados.escopos[l.dep] !== "estoque") continue;
     const k = l.dep + "|" + l.end;
     if (l.disp > 0 || l.total > 0) {
       (areasLoc.get(k) ?? areasLoc.set(k, new Set()).get(k)!).add(l.area);
+      if (l.area === "SC") { const m = scQtd.get(k) ?? scQtd.set(k, new Map()).get(k)!; m.set(l.pi, (m.get(l.pi) ?? 0) + l.total); }
       if (l.area === "FR" && !DEPOSITOS_FORA_REPOSICAO.includes(l.dep)) (ocupFr.get(k) ?? ocupFr.set(k, new Set()).get(k)!).add(l.pi);
     }
     if (!l.livre || l.disp <= 0) continue;
@@ -98,7 +101,7 @@ export function montarContexto(dados: Dados, rm: RmDados | null, params: Paramet
     return { cxp, minCx, maxCx, minUn: minCx * cxp, maxUn: maxCx * cxp, calcado: cal };
   };
   return {
-    dados, rm, params, estoqueEm: dados.atualizadoEm ?? "", est: estoquePorPi(dados), dem, linhasSc, ocupFr, livreLoc, livrePorId, areasLoc,
+    dados, rm, params, estoqueEm: dados.atualizadoEm ?? "", est: estoquePorPi(dados), dem, linhasSc, ocupFr, livreLoc, livrePorId, areasLoc, scQtd,
     produtoDesc: (pi) => dados.produtos[pi]?.desc ?? pi, ehCalcado: calcado, limites,
   };
 }
@@ -242,9 +245,26 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     if (cand.length) { casaLoc.set(cand[0], pi); casaDe.set(pi, cand[0]); }
   }
 
-  // destino SC para devolver excedentes
-  const scUsadas = new Set<string>();
-  const scDoPi = new Map<string, string>(); // pi → LOC SC escolhida (estável dentro da rodada)
+  // destino SC para devolver excedentes: cada LOC de SC tem capacidade em caixas (params.maxCaixasSc / maxCaixasScCalcado)
+  const maxSc = (pi: string) => (ctx.ehCalcado(pi) ? params.maxCaixasScCalcado : params.maxCaixasSc);
+  const scOcup = new Map<string, number>(); // LOC SC → caixas já ocupadas (planilha + missões em andamento + esta rodada)
+  const ocupSc = (k: string): number => {
+    let v = scOcup.get(k);
+    if (v === undefined) {
+      v = 0;
+      for (const [p, q] of ctx.scQtd.get(k) ?? []) { const c = ctx.dem.get(p)?.cxp; if (c) v += q / c; }
+      for (const m of efet) {
+        const c = ctx.dem.get(m.pi)?.cxp;
+        if (!c) continue;
+        if (m.tipo === "recompletamento" && chaveLoc(m.de) === k) v -= m.qtd / c;
+        else if (m.tipo === "movimentacao" && chaveLoc(m.para) === k && !ctx.areasLoc.get(k)?.has("FR")) v += m.qtd / c;
+      }
+      v = Math.max(0, v);
+      scOcup.set(k, v);
+    }
+    return v;
+  };
+  const roomSc = (pi: string, k: string) => Math.floor(maxSc(pi) - ocupSc(k) + EPS);
   const locsScDoPi = (pi: string) => {
     const m = new Map<string, number>();
     for (const l of ctx.linhasSc.get(pi) ?? []) m.set(l.dep + "|" + l.end, (m.get(l.dep + "|" + l.end) ?? 0) + l.disp);
@@ -252,16 +272,24 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   };
   const ocupadasSc = new Set<string>();
   for (const [k, ar] of ctx.areasLoc) if (ar.has("SC")) ocupadasSc.add(k);
-  const destinoSc = (pi: string, depOrigem: string): string | null => {
-    if (scDoPi.has(pi)) return scDoPi.get(pi)!;
-    const proprias = locsScDoPi(pi);
-    let k: string | undefined = proprias.find((x) => locDe(x).dep === depOrigem) ?? proprias[0];
-    if (!k) k = params.locsVaziasSc.map(chaveLoc).find((x) => !ocupadasSc.has(x) && !scUsadas.has(x));
-    if (!k) return null;
-    scUsadas.add(k); scDoPi.set(pi, k);
-    return k;
+  const vaziasScLivres = () => params.locsVaziasSc.map(chaveLoc).filter((x) => !ocupadasSc.has(x) && !scOcup.has(x));
+  /** Distribui `caixas` entre as LOCs SC do PI (mesmo paiol primeiro) e, se faltar espaço, LOCs SC vazias; respeita a capacidade. */
+  const alocarSc = (pi: string, depOrigem: string, caixas: number): { k: string; cx: number }[] => {
+    const proprias = locsScDoPi(pi).sort((a, b) => Number(locDe(b).dep === depOrigem) - Number(locDe(a).dep === depOrigem));
+    const cands = [...proprias, ...vaziasScLivres()];
+    const out: { k: string; cx: number }[] = [];
+    let falta = caixas;
+    for (const k of cands) {
+      if (falta <= 0) break;
+      const cx = Math.min(falta, roomSc(pi, k));
+      if (cx <= 0) continue;
+      out.push({ k, cx });
+      scOcup.set(k, ocupSc(k) + cx);
+      falta -= cx;
+    }
+    return out;
   };
-  const podeDevolverSc = (pi: string) => !!ctx.dem.get(pi)?.cxp && (locsScDoPi(pi).length > 0 || params.locsVaziasSc.some((v) => !ocupadasSc.has(chaveLoc(v)) && !scUsadas.has(chaveLoc(v))) || scDoPi.has(pi));
+  const podeDevolverSc = (pi: string) => !!ctx.dem.get(pi)?.cxp && (locsScDoPi(pi).some((k) => roomSc(pi, k) > 0) || vaziasScLivres().length > 0);
 
   // ---- 2) quem ainda não tem casa: LOC livre de menor custo; senão, zona de baixo giro
   const preferDep = (pi: string) => {
@@ -352,12 +380,15 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     const disponivel = sim.get(k)?.get(pi)?.qtd ?? 0;
     const caixas = Math.floor(Math.min(qtd, disponivel) / cxp + EPS);
     if (caixas <= 0) { soltas.push(`${nome(pi)} (${fmt(Math.min(qtd, disponivel))} un soltas, menos de 1 caixa de ${fmt(cxp)}, em ${loc})`); return false; }
-    const sc = destinoSc(pi, locDe(k).dep);
-    if (!sc) { semDestinoSc.push(`${nome(pi)} (${caixas} caixa(s) em ${loc})`); return false; }
-    const q = caixas * cxp;
-    propostas.push(novaProposta("movimentacao", pi, locDe(k), locDe(sc), q, prioridade, motivo, { chave: `A|${pi}|${k}|SC:${sc}`, caixas }));
-    sairSim(sim, k, pi, q);
-    return true;
+    const alocs = alocarSc(pi, locDe(k).dep, caixas);
+    const alocadas = alocs.reduce((t, x) => t + x.cx, 0);
+    if (alocadas < caixas) semDestinoSc.push(`${nome(pi)} (${caixas - alocadas} de ${caixas} caixa(s) em ${loc}: LOCs SC cheias — máx. ${maxSc(pi)} cx)`);
+    for (const { k: sc, cx } of alocs) {
+      const q = cx * cxp;
+      propostas.push(novaProposta("movimentacao", pi, locDe(k), locDe(sc), q, prioridade, motivo + (alocs.length > 1 ? ` (parte: ${cx} cx para ${locDe(sc).end}, LOC SC com limite de ${maxSc(pi)} cx)` : ""), { chave: `A|${pi}|${k}|SC:${sc}`, caixas: cx }));
+      sairSim(sim, k, pi, q);
+    }
+    return alocs.length > 0;
   };
 
   for (const k of todasLocs()) {
@@ -480,7 +511,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   };
   mk("rc-sem-origem", "critico", "Recompletamento precisa de caixas fechadas em SC", "FR abaixo do mínimo sem caixa fechada livre em SC", "Não há caixa fechada livre em SC para repor (o saldo pode estar bloqueado ou fracionado).", semOrigem, "recompletamento");
   mk("rc-parcial", "atencao", "Recompletamento cobre a meta", "SC não cobre toda a reposição necessária", "Há caixas em SC, mas não o bastante para atingir a meta.", parcial, "recompletamento");
-  mk("mv-sem-destino-sc", "atencao", "Excedente volta para o SC", "Sem LOC SC para devolver o excedente", "O PI não tem LOC SC e não há LOC SC vazia informada. Informe LOCs SC vazias em Parâmetros.", semDestinoSc, "movimentacao");
+  mk("mv-sem-destino-sc", "atencao", "Excedente volta para o SC", "Sem espaço em LOC SC para devolver o excedente", "As LOCs SC do PI estão cheias (limite de caixas por LOC) ou o PI não tem LOC SC. Informe LOCs SC vazias em Parâmetros.", semDestinoSc, "movimentacao");
   mk("mv-sem-cxp", "atencao", "FR → SC em caixas fechadas", "Sem caixa padrão (CXP) para devolver ao SC", "A devolução ao SC só é feita em caixas fechadas, e este PI não tem CXP conhecida (nenhum pedido na planilha de pedidos).", semCxp, "movimentacao");
   mk("mv-soltas", "info", "FR → SC em caixas fechadas", "Sobra solta (menos de 1 caixa) não volta ao SC", "Só caixas fechadas voltam ao SC; unidades soltas menores que 1 caixa permanecem na LOC.", soltas, "movimentacao");
   mk("mv-bloqueio", "atencao", "1 PI por LOC", "Saldo bloqueado impede esvaziar a LOC", "O PI tem saldo bloqueado nesta LOC: resolva o bloqueio antes de movimentar.", bloqueios, "movimentacao");
@@ -718,6 +749,13 @@ export function validarManual(e: EntradaManual, ctx: Contexto, missoes: Missao[]
     if (areasDe && !areasDe.has("FR")) aviso("A origem não é uma LOC FR.");
     if (areasPara && !areasPara.has("FR") && !areasPara.has("SC")) aviso("O destino não é uma LOC FR nem SC.");
     if (areasPara?.has("SC") && !areasPara.has("FR") && cxp && Math.abs(qtd / cxp - Math.round(qtd / cxp)) > 1e-6) aviso(`Devolução ao SC deve ser em caixas fechadas: ${fmt(qtd)} un não é múltiplo da caixa padrão (${fmt(cxp)}).`);
+    if (areasPara?.has("SC") && !areasPara.has("FR") && cxp) {
+      const k = chaveLoc(e.para);
+      let ocup = 0;
+      for (const [p, q] of ctx.scQtd.get(k) ?? []) { const c = ctx.dem.get(p)?.cxp; if (c) ocup += q / c; }
+      const lim = ctx.ehCalcado(e.pi) ? ctx.params.maxCaixasScCalcado : ctx.params.maxCaixasSc;
+      if (ocup + qtd / cxp > lim + EPS) aviso(`A LOC SC ${e.para.end} ficaria com ${Math.round((ocup + qtd / cxp) * 10) / 10} caixa(s), acima do limite de ${lim}.`);
+    }
     if (areasPara?.has("SC") && !areasPara.has("FR") && !cxp) aviso("Caixa padrão (CXP) deste PI não conhecida: não dá para conferir se a devolução ao SC é em caixas fechadas.");
   }
   if (areasPara?.has("FR")) {

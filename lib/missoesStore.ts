@@ -175,6 +175,8 @@ export async function salvarParametros(p: Partial<Parametros>): Promise<Parametr
     if (p.minCaixas !== undefined) a.minCaixas = n(p.minCaixas, 1, 100, a.minCaixas);
     if (p.maxCaixasCalcado !== undefined) a.maxCaixasCalcado = n(p.maxCaixasCalcado, 1, 100, a.maxCaixasCalcado);
     if (p.minCaixasCalcado !== undefined) a.minCaixasCalcado = n(p.minCaixasCalcado, 1, 100, a.minCaixasCalcado);
+    if (p.maxCaixasSc !== undefined) a.maxCaixasSc = n(p.maxCaixasSc, 1, 500, a.maxCaixasSc);
+    if (p.maxCaixasScCalcado !== undefined) a.maxCaixasScCalcado = n(p.maxCaixasScCalcado, 1, 500, a.maxCaixasScCalcado);
     if (p.pedidosCobertura !== undefined) a.pedidosCobertura = n(p.pedidosCobertura, 1, 50, a.pedidosCobertura);
     if (p.caixasZona !== undefined) a.caixasZona = n(p.caixasZona, 1, 50, a.caixasZona);
     if (p.pisPorLocZona !== undefined) a.pisPorLocZona = n(p.pisPorLocZona, 1, 100, a.pisPorLocZona);

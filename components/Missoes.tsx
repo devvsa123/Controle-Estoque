@@ -108,6 +108,7 @@ const REGRAS: Record<TipoMissao, string[]> = {
     "Padrão: cada PI com pedido fracionado tem uma LOC FR só dele, com no mínimo 1 caixa e no máximo 5 (calçados: no máximo 3, por serem caixas grandes).",
     "Quando a LOC do PI fica abaixo do mínimo, o sistema leva caixas fechadas de SC até cobrir alguns pedidos fracionados médios (parâmetro), sempre entre o mínimo e o máximo.",
     "A média por pedido é a média da quantidade fracionada por pedido (não por dia), porque a maioria dos itens é sazonal. A frequência mostra a cadência dos pedidos fracionados.",
+    "Cada LOC de SC comporta no máximo 15 caixas (calçado: 10): a devolução do FR respeita esse limite e, se a LOC encher, o resto vai para outra LOC SC do PI ou para uma LOC SC vazia informada.",
     "Caixas de SC: mesmo paiol primeiro, depois a validade mais próxima (FEFO). Faltou LOC? Os PIs de menor saída vão para a zona de baixo giro (rua 01 do P02), com 2 caixas.",
   ],
   movimentacao: [
@@ -183,7 +184,7 @@ function Parametrologia({ tipo, params, resumo }: { tipo: TipoMissao; params: Pa
     } catch { setMsg("Não consegui ler os ajustes deste navegador."); }
   }
 
-  const num = (k: "maxCaixas" | "minCaixas" | "maxCaixasCalcado" | "minCaixasCalcado" | "pedidosCobertura" | "caixasZona" | "pisPorLocZona", rot: string, dica?: string) => (
+  const num = (k: "maxCaixas" | "minCaixas" | "maxCaixasCalcado" | "minCaixasCalcado" | "maxCaixasSc" | "maxCaixasScCalcado" | "pedidosCobertura" | "caixasZona" | "pisPorLocZona", rot: string, dica?: string) => (
     <label title={dica}>
       {rot}
       <input type="number" min={1} value={p[k]} style={{ width: 90 }} onChange={(e) => setP({ ...p, [k]: +e.target.value })} />
@@ -210,6 +211,8 @@ function Parametrologia({ tipo, params, resumo }: { tipo: TipoMissao; params: Pa
         {num("maxCaixas", "Máximo de caixas")}
         {num("minCaixasCalcado", "Mínimo (calçado)")}
         {num("maxCaixasCalcado", "Máximo (calçado)")}
+        {num("maxCaixasSc", "Máximo por LOC de SC", "Capacidade de uma LOC de caixa fechada (SC). A devolução do FR nunca passa disso.")}
+        {num("maxCaixasScCalcado", "Máximo por LOC de SC (calçado)")}
         {num("pedidosCobertura", "Pedidos médios a cobrir", "O recompletamento leva a LOC até este número de pedidos fracionados médios (entre o mínimo e o máximo)")}
         {num("caixasZona", "Caixas na zona", "Caixas de cada PI na zona de baixo giro (rua 01 do P02)")}
         {num("pisPorLocZona", "PIs por LOC da zona")}
