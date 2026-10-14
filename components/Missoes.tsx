@@ -22,6 +22,7 @@ interface Resposta {
   rmErro: string | null;
   estoqueEm: string | null;
   geradoEm: string;
+  auditoria: { conferidas: number; total: number; checagens: Record<string, number>; violacoes: { id: string; regra: string; detalhe: string }[] };
   vazios: { fr: number; sc: number; arquivo: string | null; atualizadoEm: string | null; erro: string | null };
 }
 
@@ -260,7 +261,7 @@ function imprimir(titulo: string, missoes: Missao[], estoqueEm: string | null) {
       <td><b>${esc(m.de.dep)}</b> ${esc(m.de.end)}</td><td><b>${esc(m.para.dep)}</b> ${esc(m.para.end)}</td>
       <td>${esc(m.lote)}${m.validade ? `<div>${esc(m.validade.split("-").reverse().join("/"))}</div>` : ""}</td>
       <td class="obs">${esc(m.obs)}</td></tr>`).join("");
-    return `<h2>Onda ${esc(onda)} · origem ${esc(dep)} <small>(${ms.length} missão(ões)${onda === "2" ? " — só depois de concluir a onda 1" : ""})</small></h2>
+    return `<h2>Onda ${esc(onda)} · origem ${esc(dep)} <small>(${ms.length} missão(ões)${Number(onda) >= 2 ? ` — só depois de concluir a onda ${Number(onda) - 1}` : ""})</small></h2>
       <table><thead><tr><th></th><th>Missão</th><th>PI / Descrição</th><th>Qtd</th><th>De</th><th>Para</th><th>Lote / Val.</th><th>Obs.</th></tr></thead><tbody>${linhas}</tbody></table>`;
   }).join("");
   w.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${esc(titulo)}</title><style>
@@ -287,7 +288,7 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
   const [filtro, setFiltro] = useState<Filtro>("abertas");
   const [q, setQ] = useState("");
   const [origem, setOrigem] = useState<"" | "auto" | "manual">("");
-  const [onda, setOnda] = useState<"" | "1" | "2">("");
+  const [onda, setOnda] = useState<"" | "1" | "2" | "3" | "4">("");
   const [status, setStatus] = useState<"" | StatusMissao>("");
   const [paiol, setPaiol] = useState("");
   const [rua, setRua] = useState("");
@@ -300,7 +301,7 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
     pendentes: missoes.filter((m) => m.status === "pendente").length,
     exec: missoes.filter((m) => m.status === "em_execucao" || m.status === "feita").length,
     onda1: missoes.filter((m) => ABERTA(m.status) && m.onda === 1).length,
-    onda2: missoes.filter((m) => ABERTA(m.status) && m.onda === 2).length,
+    onda2: missoes.filter((m) => ABERTA(m.status) && m.onda >= 2).length,
     div: missoes.filter((m) => m.status === "divergente").length,
     concluidas: missoes.filter((m) => m.status === "concluida").length,
     canceladas: missoes.filter((m) => m.status === "cancelada").length,
@@ -350,7 +351,7 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
   return (
     <>
       <div className="grid g4">
-        <div className="card kpi warn"><div className="v">{fmtNum(cont.pendentes)}</div><div className="l">Pendentes · onda 1: {fmtNum(cont.onda1)} · onda 2: {fmtNum(cont.onda2)}</div></div>
+        <div className="card kpi warn"><div className="v">{fmtNum(cont.pendentes)}</div><div className="l">Pendentes · onda 1: {fmtNum(cont.onda1)} · onda 2+: {fmtNum(cont.onda2)}</div></div>
         <div className="card kpi"><div className="v">{fmtNum(cont.exec)}</div><div className="l">Em execução ou feitas (aguardando a planilha confirmar)</div></div>
         <div className="card kpi ok"><div className="v">{fmtNum(cont.concluidas)}</div><div className="l">Confirmadas pela planilha · {fmtNum(cont.canceladas)} canceladas</div></div>
         <div className="card kpi bad"><div className="v">{fmtNum(cont.div)}</div><div className="l">Divergentes (a planilha não bateu)</div></div>
@@ -365,7 +366,7 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
             <button aria-pressed={filtro === "todas"} onClick={() => setFiltro("todas")}>Todas</button>
           </div>
           <input type="search" placeholder="Buscar missão, PI, endereço, responsável…" value={q} onChange={(e) => setQ(e.target.value)} style={{ minWidth: 220, flex: "1 1 220px" }} />
-          <select value={onda} onChange={(e) => setOnda(e.target.value as typeof onda)} aria-label="Onda"><option value="">Todas as ondas</option><option value="1">Onda 1</option><option value="2">Onda 2</option></select>
+          <select value={onda} onChange={(e) => setOnda(e.target.value as typeof onda)} aria-label="Onda"><option value="">Todas as ondas</option><option value="1">Onda 1</option><option value="2">Onda 2</option><option value="3">Onda 3</option><option value="4">Onda 4</option></select>
           <select value={paiol} onChange={(e) => { setPaiol(e.target.value); setRua(""); }} aria-label="Paiol de origem"><option value="">Todos os paióis</option>{paiois.map((d) => <option key={d} value={d}>{d}</option>)}</select>
           <select value={rua} onChange={(e) => setRua(e.target.value)} aria-label="Rua de origem"><option value="">Todas as ruas</option>{ruas.map((r) => <option key={r} value={r}>Rua {r.padStart(2, "0")}</option>)}</select>
           <select value={status} onChange={(e) => setStatus(e.target.value as typeof status)} aria-label="Status"><option value="">Todos os status</option>{STATUS_MISSAO.map((s) => <option key={s.id} value={s.id}>{s.nome}</option>)}</select>
@@ -420,7 +421,7 @@ function MissaoLinha({ m, tipo, aberto, onToggle, onAlterar }: { m: Missao; tipo
   return (
     <>
       <tr className="click" onClick={onToggle} style={encerrada ? { opacity: 0.6 } : undefined}>
-        <td><span className={`tag ${m.onda === 1 ? "ok" : "neutral"}`} title={m.onda === 2 ? "Só depois que a onda 1 liberar a LOC de destino" : "Pode ser feita já"}>{m.onda}</span></td>
+        <td><span className={`tag ${m.onda === 1 ? "ok" : "neutral"}`} title={m.onda >= 2 ? `Só depois de concluir a onda ${m.onda - 1} (libera o destino ou traz o saldo)` : "Pode ser feita já"}>{m.onda}</span></td>
         <td><span className={`tag ${PRIO[m.prioridade].tom}`}>{PRIO[m.prioridade].nome}</span></td>
         <td>{aberto ? "▾" : "▸"} {m.id}{m.origem === "manual" && <span className="tag neutral" style={{ marginLeft: 4 }}>manual</span>}</td>
         <td className="wrapc"><strong>{m.pi}</strong> {m.desc}{m.freq && m.freq !== "—" && <div className="muted small">{m.freq}{m.qtdMediaPedido ? ` · média ${fmtNum(m.qtdMediaPedido)} un/pedido` : ""}</div>}</td>
@@ -603,17 +604,27 @@ const TOM_NIVEL = { critico: "bad", atencao: "warn", info: "neutral" } as const;
 export function AlertasView() {
   return (
     <Carga>
-      {(d) => <AlertasLista alertas={d.alertas} conf={d.conformidade} resumo={d.resumo} />}
+      {(d) => <AlertasLista alertas={d.alertas} conf={d.conformidade} resumo={d.resumo} auditoria={d.auditoria} />}
     </Carga>
   );
 }
 
-function AlertasLista({ alertas, conf, resumo }: { alertas: Alerta[]; conf: Conformidade | null; resumo: ResumoPlano | null }) {
+function AlertasLista({ alertas, conf, resumo, auditoria }: { alertas: Alerta[]; conf: Conformidade | null; resumo: ResumoPlano | null; auditoria: Resposta["auditoria"] }) {
   const { recarregar, carregando } = usar();
   const [tipo, setTipo] = useState<"" | TipoMissao>("");
   const lista = alertas.filter((a) => !tipo || !a.tipo || a.tipo === tipo);
   return (
     <div className="grid" style={{ gap: 12 }}>
+      <div className="card" style={{ borderLeft: `4px solid var(--${auditoria.total ? "bad" : "ok"})` }}>
+        <h2>Auditoria do plano</h2>
+        <p style={{ margin: "2px 0" }}>
+          <strong>{fmtNum(auditoria.conferidas)}</strong> missões abertas conferidas, em ordem de onda, contra a planilha de estoque: <strong>{auditoria.total ? `${fmtNum(auditoria.total)} violação(ões)` : "nenhuma violação"}</strong>.
+        </p>
+        <p className="muted small" style={{ margin: "2px 0" }}>
+          Checagens: mesmo paiol ({fmtNum(auditoria.checagens.PAIOL ?? 0)}) · caixa fechada ({fmtNum(auditoria.checagens["CX-FECHADA"] ?? 0)}) · limite da LOC de SC com todos os PIs ({fmtNum(auditoria.checagens["SC-LIMITE"] ?? 0)}) · saldo na origem ({fmtNum(auditoria.checagens.ORIGEM ?? 0)}) · máximo de caixas no FR ({fmtNum(auditoria.checagens["FR-LIMITE"] ?? 0)}) · 1 PI por LOC ({fmtNum(auditoria.checagens["FR-1PI"] ?? 0)}).
+        </p>
+        {auditoria.violacoes.length > 0 && <ul className="small" style={{ margin: "6px 0 0 18px", padding: 0 }}>{auditoria.violacoes.slice(0, 12).map((v, i) => <li key={i}>{v.id} · {v.regra}: {v.detalhe}</li>)}</ul>}
+      </div>
       {conf && (
         <div className="card">
           <h2>Aderência ao padrão (1 PI por LOC, entre o mínimo e o máximo de caixas)</h2>

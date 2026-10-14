@@ -3,6 +3,7 @@ import { demandaFracionada, type DemandaFr } from "./demandaFr";
 import { montarLayout, ruaDe, ruaForaDoLayout } from "./layoutFr";
 import { chaveRota } from "./rota";
 import type { RmDados } from "./rm";
+import { auditar } from "./auditoria";
 import { estoquePorPi } from "./rmAnalise";
 import type { Dados, Linha } from "./types";
 import {
@@ -422,7 +423,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   const compart = new Set(hospedeDe.keys()); // LOCs com 2 PIs
 
   // ---- 3) movimentações FR→FR e FR→SC
-  const propostas: Proposta[] = [];
+  let propostas: Proposta[] = [];
   const semDestinoSc: string[] = [], bloqueios: string[] = [];
   const baseDe = (pi: string, k: string) => ctx.livreLoc.get(`${pi}|${k}`) ?? 0;
   const novaProposta = (tipo: TipoMissao, pi: string, de: Local, para: Local, qtd: number, prioridade: 1 | 2 | 3, motivo: string, extra: Partial<Proposta> = {}): Proposta => ({
@@ -554,24 +555,37 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     }
   }
 
-  // ---- 5) ondas: quem entra numa LOC que ainda tem outro PI só depois que esse PI sair (onda 2)
+  // ---- 5) ondas: a AUDITORIA decide a ordem. Tudo começa na onda 1; quem fere um limite (destino acima do máximo, outro PI na LOC, origem sem saldo)
+  //         vai para a onda seguinte, até a ordem fechar. O que nenhuma ordem conserta é descartado (nunca sai missão que a auditoria reprova).
   const saidas = new Map<string, Set<string>>(); // LOC → PIs que saem dela por missão
   for (const p of propostas) if (p.tipo === "movimentacao") (saidas.get(chaveLoc(p.de)) ?? saidas.set(chaveLoc(p.de), new Set()).get(chaveLoc(p.de))!).add(p.pi);
   for (const p of propostas) {
     const dest = chaveLoc(p.para);
     const estranhos = [...(ctx.ocupFr.get(dest) ?? [])].filter((x) => x !== p.pi && (saidas.get(dest)?.has(x) ?? false));
-    if (estranhos.length) {
-      p.onda = 2;
-      // troca de LOCs (A→B e B→A): não dá para ordenar, executar juntas
-      const troca = propostas.find((q) => q !== p && chaveLoc(q.de) === dest && chaveLoc(q.para) === chaveLoc(p.de));
-      if (troca) { p.onda = 1; troca.onda = 1; p.nota = troca.nota = "Troca entre duas LOCs: executar as duas missões juntas"; }
-    }
+    if (!estranhos.length) continue;
+    // troca de LOCs (A→B e B→A): não dá para ordenar, executar juntas
+    const troca = propostas.find((q) => q !== p && chaveLoc(q.de) === dest && chaveLoc(q.para) === chaveLoc(p.de));
+    if (troca) { p.nota = troca.nota = "Troca entre duas LOCs: executar as duas missões juntas"; }
   }
-
-  // saída de uma LOC que recebe o mesmo PI por outra missão (juntar e depois devolver caixa fechada): só depois da chegada
-  for (const p of propostas) {
-    if (p.tipo !== "movimentacao") continue;
-    if (propostas.some((q) => q !== p && q.pi === p.pi && chaveLoc(q.para) === chaveLoc(p.de))) p.onda = 2;
+  const comoMissoes = (lista: Proposta[]): Missao[] => lista.map((p, i) => ({ ...p, id: `~${String(i).padStart(5, "0")}`, origem: "auto", status: "pendente", responsavel: "", obs: "", criadaEm: "", atualizadoEm: "", concluidaEm: null, verificadaEm: null, motivoCancelamento: "" }) as Missao);
+  const auditarLista = (lista: Proposta[]) => auditar(ctx, [...efet, ...comoMissoes(lista)], compart);
+  const bumpaveis = new Set(["FR-LIMITE", "FR-1PI", "ORIGEM"]);
+  for (let volta = 0; volta < 8; volta++) {
+    const ruins = new Set(auditarLista(propostas).violacoes.filter((v) => v.id.startsWith("~") && bumpaveis.has(v.regra)).map((v) => v.id));
+    if (!ruins.size) break;
+    let mexeu = false;
+    for (const id of ruins) { const p = propostas[Number(id.slice(1))]; if (p.onda < 4) { p.onda++; mexeu = true; } }
+    if (!mexeu) break;
+  }
+  const descartadas: string[] = [];
+  {
+    const r = auditarLista(propostas);
+    const ruins = new Map<string, string>();
+    for (const v of r.violacoes) if (v.id.startsWith("~") && !ruins.has(v.id)) ruins.set(v.id, `${v.regra}: ${v.detalhe}`);
+    if (ruins.size) {
+      for (const [id, det] of ruins) { const p = propostas[Number(id.slice(1))]; descartadas.push(`${p.pi} ${p.de.dep} ${p.de.end} → ${p.para.end} (${fmt(p.qtd)} un) — ${det}`); }
+      propostas = propostas.filter((_, i) => !ruins.has(`~${String(i).padStart(5, "0")}`));
+    }
   }
 
   const alertas: Alerta[] = [];
@@ -584,6 +598,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   mk("mv-sem-cxp", "atencao", "FR → SC em caixas fechadas", "Sem caixa padrão (CXP) para devolver ao SC", "A devolução ao SC só é feita em caixas fechadas, e este PI não tem CXP conhecida (nenhum pedido na planilha de pedidos).", semCxp, "movimentacao");
   mk("mv-soltas", "info", "FR → SC em caixas fechadas", "Sobra solta (menos de 1 caixa) não volta ao SC", "Só caixas fechadas voltam ao SC; unidades soltas menores que 1 caixa permanecem na LOC.", soltas, "movimentacao");
   mk("mv-bloqueio", "atencao", "1 PI por LOC", "Saldo bloqueado impede esvaziar a LOC", "O PI tem saldo bloqueado nesta LOC: resolva o bloqueio antes de movimentar.", bloqueios, "movimentacao");
+  mk("auditoria-descartada", "atencao", "Auditoria do plano", "Missão reprovada pela auditoria e descartada", "A missão feriria um limite (caixas fechadas, máximo de caixas no SC ou no FR, 1 PI por LOC, origem sem saldo ou outro paiol) em qualquer ordem e não foi criada. Normalmente falta LOC vazia no paiol.", descartadas, "movimentacao");
   mk("mv-sem-lugar", "critico", "Todo PI fracionado precisa de uma LOC",
     `Faltou LOC no paiol, mesmo com 2 PIs por LOC: ${semLugar.length} PI(s) sem lugar`,
     `Há ${ativos.length} PIs com fracionado, ${casaDe.size} com LOC própria e ${zonaDe.size} dividindo LOC (2 por LOC). Faltam LOCs para ${semLugar.length} PIs (os de menor saída do paiol); o saldo deles no FR é devolvido ao SC. Para mantê-los no FR, libere LOCs FR vazias no paiol (consulta de endereços vazios ou Parâmetros).`,
@@ -723,6 +738,16 @@ export function verificarEstado(estado: EstadoMissoes, ctx: Contexto, agora: str
     if (ocupAtual(k) + cx > lim + EPS) {
       m.status = "cancelada"; m.motivoCancelamento = `Automático: a LOC SC ${m.para.end} ${Number.isFinite(ocupAtual(k)) ? `já tem ${Math.round(ocupAtual(k) * 10) / 10} caixa(s) e o limite é ${lim}` : `tem item sem caixa padrão (CXP) conhecida, então não dá para garantir o limite de ${lim} caixas`}.`; m.atualizadoEm = agora; mudou = true;
     } else ocup.set(k, ocupAtual(k) + cx);
+  }
+
+  // 3) auditoria: missão automática pendente que fere um limite (caixas fechadas, máximo de caixas, outro paiol) é cancelada e refeita no próximo plano
+  const emAndamento = Object.values(estado.missoes).filter((m) => EM_ANDAMENTO(m.status));
+  const aud = auditar(ctx, emAndamento, new Set(Object.values(estado.zona ?? {})));
+  const motivos = new Map<string, string>();
+  for (const v of aud.violacoes) if (["SC-LIMITE", "CX-FECHADA", "PAIOL", "FR-LIMITE"].includes(v.regra) && !motivos.has(v.id)) motivos.set(v.id, `${v.regra}: ${v.detalhe}`);
+  for (const [id, motivo] of motivos) {
+    const m = estado.missoes[id];
+    if (m && m.origem === "auto" && m.status === "pendente") { m.status = "cancelada"; m.motivoCancelamento = `Auditoria: ${motivo}`; m.atualizadoEm = agora; mudou = true; }
   }
 
   return mudou;

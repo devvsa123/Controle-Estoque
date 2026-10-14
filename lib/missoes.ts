@@ -35,7 +35,7 @@ export interface Missao {
   origem: "auto" | "manual";
   status: StatusMissao;
   prioridade: 1 | 2 | 3; // 1 = alta
-  onda: 1 | 2; // 2 só depois que as de onda 1 que liberam o destino forem feitas
+  onda: number; // 1 pode ser feita já; 2, 3… só depois que as ondas anteriores liberarem o destino (auditoria confere a ordem)
   pi: string;
   desc: string;
   qtd: number; // unidades

@@ -1,5 +1,6 @@
 import { atualizarJson, lerJson } from "./blobJson";
 import { ARQUIVO_MISSOES } from "./config";
+import { auditar, type ResultadoAuditoria } from "./auditoria";
 import { obterEstoque, obterRm, obterVazios } from "./fontes";
 import type { Vazios } from "./vazios";
 import {
@@ -31,6 +32,7 @@ export interface RespostaMissoes {
   rmErro: string | null;
   estoqueEm: string | null;
   geradoEm: string;
+  auditoria: ResultadoAuditoria & { total: number };
   vazios: { fr: number; sc: number; arquivo: string | null; atualizadoEm: string | null; erro: string | null };
 }
 
@@ -116,11 +118,16 @@ export async function sincronizarEListar(): Promise<RespostaMissoes> {
     resumo = plano.resumo;
   }
   alertas.push(...alertasDoEstado(ctx, lista, conf, agora));
+  // auditoria independente de tudo o que está aberto: prova de que as missões respeitam os limites e parâmetros
+  const aud = auditar(ctx, lista.filter((m) => EM_ANDAMENTO(m.status)), new Set(Object.values(estado.zona ?? {})));
+  if (aud.violacoes.length)
+    alertas.push({ id: "auditoria", nivel: "critico", regra: "Missões respeitam limites e parâmetros", titulo: `Auditoria: ${aud.violacoes.length} violação(ões) em missões abertas`, detalhe: "Missões abertas que ferem caixa fechada, máximo de caixas, 1 PI por LOC, paiol ou saldo de origem. As automáticas pendentes são canceladas e refeitas na próxima atualização.", total: aud.violacoes.length, exemplos: aud.violacoes.slice(0, 8).map((v) => `${v.id} · ${v.regra}: ${v.detalhe}`) });
   const peso = { critico: 0, atencao: 1, info: 2 } as const;
   alertas.sort((a, b) => peso[a.nivel] - peso[b.nivel]);
 
   return {
     missoes: lista.sort((a, b) => a.onda - b.onda || a.prioridade - b.prioridade || a.id.localeCompare(b.id)),
+    auditoria: { ...aud, violacoes: aud.violacoes.slice(0, 100), total: aud.violacoes.length },
     params: estado.params, alertas, conformidade: conf, resumo, rmErro, estoqueEm: dados.atualizadoEm, geradoEm: agora,
     vazios: { fr: vazios.fr.length, sc: vazios.sc.length, arquivo: vazios.arquivo, atualizadoEm: vazios.atualizadoEm, erro: vazios.erro },
   };
