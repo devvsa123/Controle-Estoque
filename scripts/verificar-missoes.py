@@ -7,6 +7,7 @@ MAX_SC, MAX_SC_CAL, MAX_FR, MAX_FR_CAL, CX_COMPART = 12, 10, 5, 3, 2
 CAL = {"SAPATO","COTURNO","BOTA","TENIS","MOCASSIM","SANDALIA","CHINELO","BOTINA"}
 d = pd.read_excel(estoque)
 d = d[d.DEPOSITO.isin(["P01","P02","P03","P04","P05","P06"])].copy()
+d = d[d.PI.astype(str).str.upper()!="VAZIO"].copy()  # linhas de posição vazia não são saldo
 d["PI"] = d.PI.astype(str); d["DISP"]=d.DISPONIVEL.astype(float); d["TOT"]=d.TOTAL.astype(float)
 cxp = d.dropna(subset=["CXP"]).groupby("PI").CXP.first().to_dict() if "CXP" in d else {}
 import os

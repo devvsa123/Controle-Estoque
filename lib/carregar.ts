@@ -72,8 +72,8 @@ export async function lerArquivo(nomes: string[], ifNoneMatch?: string | null): 
 
 export async function carregarDados(): Promise<Dados> {
   const { buf, atualizadoEm, fonte } = await lerArquivo([ARQUIVO_BLOB]);
-  const { linhas, produtos } = lerPlanilha(buf!);
-  return { atualizadoEm, fonte, linhas, produtos, escopos: ESCOPO_DEPOSITO };
+  const { linhas, produtos, vazias } = lerPlanilha(buf!);
+  return { atualizadoEm, fonte, linhas, produtos, vazias, escopos: ESCOPO_DEPOSITO };
 }
 
 export { ARQUIVOS_RM };

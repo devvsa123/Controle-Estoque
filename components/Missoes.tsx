@@ -207,8 +207,8 @@ function Parametrologia({ tipo, params, resumo, vazios }: { tipo: TipoMissao; pa
       <summary style={{ cursor: "pointer", fontWeight: 600 }}>Regras e parâmetros (compartilhados por todos)</summary>
       <ul style={{ margin: "8px 0 8px 18px", padding: 0 }}>{REGRAS[tipo].map((t) => <li key={t}>{t}</li>)}</ul>
       <p className="small" style={{ margin: "4px 0 8px" }}>
-        <strong>LOCs vazias (consulta do WMS):</strong>{" "}
-        {vazios.erro ? <span style={{ color: "var(--bad)" }}>{vazios.erro}</span> : <>{fmtNum(vazios.fr)} FR e {fmtNum(vazios.sc)} SC lidas de “{vazios.arquivo}” ({vazios.atualizadoEm ? fmtDataHora(vazios.atualizadoEm) : "—"}). Paióis P03, P33, REC, P04, P07 e P06 ficam de fora.</>}
+        <strong>LOCs vazias (da planilha de estoque):</strong>{" "}
+        {vazios.erro ? <span style={{ color: "var(--bad)" }}>{vazios.erro}</span> : <>{fmtNum(vazios.fr)} FR e {fmtNum(vazios.sc)} SC lidas da {vazios.arquivo} ({vazios.atualizadoEm ? fmtDataHora(vazios.atualizadoEm) : "—"}); servem de coringa para as movimentações grandes dentro de cada paiol. Paióis P03, P33, REC, P04, P07 e P06 ficam de fora.</>}
       </p>
       {resumo && (
         <p className="small" style={{ margin: "4px 0 8px" }}>

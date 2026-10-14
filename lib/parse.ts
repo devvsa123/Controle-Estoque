@@ -1,5 +1,5 @@
 import * as XLSX from "xlsx";
-import type { Linha, Produto } from "./types";
+import type { Linha, PosicaoVazia, Produto } from "./types";
 
 const TAMANHOS_LETRA = new Set(["PP", "P", "M", "G", "GG", "XG", "XGG", "EG", "EGG", "EXG", "EXGG", "GGG", "U"]);
 
@@ -57,7 +57,7 @@ export function separarFamilia(descricao: string): { familia: string; variante: 
 const COLUNAS_CXP = ["CXP", "CX_PADRAO", "CAIXA_PADRAO", "QTD_CAIXA", "QTD_POR_CAIXA", "QTD_CX", "QTDE_CAIXA", "QTD_PADRAO"];
 const normCol = (c: string) => c.trim().toUpperCase().replace(/[\s.-]+/g, "_");
 
-export function lerPlanilha(buf: Buffer | ArrayBuffer): { linhas: Linha[]; produtos: Record<string, Produto> } {
+export function lerPlanilha(buf: Buffer | ArrayBuffer): { linhas: Linha[]; produtos: Record<string, Produto>; vazias: PosicaoVazia[] } {
   const wb = XLSX.read(buf, { type: "buffer", cellDates: false });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows = XLSX.utils.sheet_to_json<Record<string, unknown>>(ws, { raw: true, defval: "" });
@@ -69,9 +69,18 @@ export function lerPlanilha(buf: Buffer | ArrayBuffer): { linhas: Linha[]; produ
   const colCxp = Object.keys(rows[0]).find((c) => COLUNAS_CXP.includes(normCol(c)));
   const linhas: Linha[] = [];
   const produtos: Record<string, Produto> = {};
+  const vazias: PosicaoVazia[] = [];
+  const vistas = new Set<string>();
   for (const r of rows) {
     const pi = txt(r.PI);
     if (!pi) continue;
+    // linha de posição livre: não é produto nem saldo, é um endereço vazio do WMS
+    if (pi.toUpperCase() === "VAZIO" || /POSICAO LIVRE|POSIÇÃO LIVRE/i.test(txt(r.DESCRICAO))) {
+      const v = { dep: txt(r.DEPOSITO).toUpperCase(), area: txt(r.AREA).toUpperCase(), end: txt(r.ENDERECO).toUpperCase() };
+      const k = `${v.dep}|${v.area}|${v.end}`;
+      if (v.dep && v.end && !vistas.has(k)) { vistas.add(k); vazias.push(v); }
+      continue;
+    }
     if (!produtos[pi]) {
       const desc = txt(r.DESCRICAO).replace(/\s+/g, " ");
       const { familia, variante } = separarFamilia(desc);
@@ -95,5 +104,5 @@ export function lerPlanilha(buf: Buffer | ArrayBuffer): { linhas: Linha[]; produ
       id: txt(r.ID_QUANT),
     });
   }
-  return { linhas, produtos };
+  return { linhas, produtos, vazias };
 }
