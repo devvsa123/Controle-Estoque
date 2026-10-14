@@ -72,8 +72,8 @@ export interface Parametros {
   maxCaixasSc: number; // capacidade de uma LOC de SC (caixas fechadas)
   maxCaixasScCalcado: number;
   pedidosCobertura: number; // quantos pedidos fracionados "médios" o recompletamento deve cobrir
-  caixasZona: number; // caixas de cada PI na zona de baixo giro (rua 01 do P02)
-  pisPorLocZona: number; // quantos PIs cabem em uma LOC da zona
+  caixasZona: number; // máximo de caixas de cada PI quando 2 PIs dividem uma LOC FR (falta de LOC no paiol)
+  pisPorLocZona: number; // (sem uso: agora são sempre 2 PIs por LOC compartilhada)
   caixasPorPi: Record<string, number>; // máximo de caixas por LOC específico de um PI
   locsVazias: Local[]; // LOCs FR livres, informadas manualmente (a planilha só mostra LOCs com saldo)
   locsVaziasSc: Local[]; // LOCs SC livres para devolver excedentes
@@ -95,7 +95,7 @@ export const PARAMS_PADRAO_MISSOES: Parametros = {
 };
 
 export interface EstadoMissoes {
-  versao: 3;
+  versao: 4;
   seq: { R: number; A: number };
   missoes: Record<string, Missao>;
   params: Parametros;
