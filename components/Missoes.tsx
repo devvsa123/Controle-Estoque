@@ -11,9 +11,12 @@ import { csv, fmtDataHora, fmtNum, norm } from "@/lib/util";
 
 /* ------------------------------------------------------------------ estado compartilhado */
 
+interface ConteudoLoc { a: "FR" | "SC"; i: [pi: string, desc: string, qtd: number, bloq: number, cxp: number | null, calcado: 0 | 1][] }
+
 interface ResumoPlano { ativos: number; comCasa: number; naZona: number; semLugar: number }
 
 interface Resposta {
+  locs: Record<string, ConteudoLoc>;
   missoes: Missao[];
   params: Parametros;
   alertas: Alerta[];
@@ -144,7 +147,7 @@ export function MissoesTipo({ tipo, estoque }: { tipo: TipoMissao; estoque: Dado
           <>
             <Parametrologia tipo={tipo} params={d.params} resumo={d.resumo} vazios={d.vazios} />
             {d.rmErro && <div className="note">Missões automáticas desativadas: {d.rmErro}. As manuais continuam funcionando.</div>}
-            {sub === "lista" ? <Lista tipo={tipo} missoes={d.missoes.filter((m) => m.tipo === tipo)} geradoEm={d.geradoEm} estoqueEm={d.estoqueEm} /> : <Manual tipo={tipo} estoque={estoque} onCriada={() => setSub("lista")} />}
+            {sub === "lista" ? <Lista tipo={tipo} missoes={d.missoes.filter((m) => m.tipo === tipo)} geradoEm={d.geradoEm} estoqueEm={d.estoqueEm} locs={d.locs} params={d.params} abertas={d.missoes.filter((x) => ABERTA(x.status) || x.status === "feita")} /> : <Manual tipo={tipo} estoque={estoque} onCriada={() => setSub("lista")} />}
           </>
         )}
       </Carga>
@@ -244,25 +247,99 @@ const STATUS_MANUAIS: StatusMissao[] = ["pendente", "em_execucao", "feita", "can
 
 const esc = (v: unknown) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]!));
 
+const chaveDe = (l: { dep: string; end: string }) => `${l.dep}|${l.end}`;
+const ruaDe = (end: string) => String(parseInt(end.split("-")[0], 10)).padStart(2, "0");
+/** Ordem do caminho físico: onda, paiol e rua de origem, coluna, nível, lado (a rua é percorrida de ponta a ponta). */
+const porCaminho = (a: Missao, b: Missao) => a.onda - b.onda || a.de.dep.localeCompare(b.de.dep) || chaveRota(a.de.end).localeCompare(chaveRota(b.de.end)) || a.id.localeCompare(b.id);
+
+function limiteFr(m: Missao, calcado: boolean, params: Parametros) {
+  return params.caixasPorPi[m.pi] > 0 ? params.caixasPorPi[m.pi] : calcado ? params.maxCaixasCalcado : params.maxCaixas;
+}
+
+/** Conteúdo das LOCs (planilha) + missões abertas por LOC, para mostrar o resultado de cada missão na ordem das ondas. */
+interface Visao { locs: Record<string, ConteudoLoc>; params: Parametros; porLoc: Map<string, Missao[]>; cxpPi: Map<string, number> }
+
+function criarVisao(locs: Record<string, ConteudoLoc>, params: Parametros, abertas: Missao[]): Visao {
+  const porLoc = new Map<string, Missao[]>(), cxpPi = new Map<string, number>();
+  for (const c of Object.values(locs)) for (const [pi, , , , cx] of c.i) if (cx && !cxpPi.has(pi)) cxpPi.set(pi, cx);
+  for (const m of abertas) {
+    if (m.caixas && !cxpPi.has(m.pi)) cxpPi.set(m.pi, m.qtd / m.caixas);
+    for (const l of [m.de, m.para]) { const k = chaveDe(l); (porLoc.get(k) ?? porLoc.set(k, []).get(k)!).push(m); }
+  }
+  return { locs, params, porLoc, cxpPi };
+}
+
+/** Unidades do PI na LOC FR quando a missão `m` roda: planilha + chegadas das ondas anteriores e desta (ids menores) − saídas das ondas anteriores. */
+function frAntes(v: Visao, key: string, pi: string, m: Missao): number {
+  let q = v.locs[key]?.i.find((x) => x[0] === pi)?.[2] ?? 0;
+  for (const x of v.porLoc.get(key) ?? []) {
+    if (x.id === m.id || x.pi !== pi) continue;
+    const antes = x.onda < m.onda, mesma = x.onda === m.onda && x.id < m.id;
+    if (chaveDe(x.para) === key && (antes || mesma)) q += x.qtd;
+    if (chaveDe(x.de) === key && x.tipo === "movimentacao" && antes) q -= x.qtd;
+  }
+  return Math.max(0, q);
+}
+
+/** Caixas na LOC SC (todos os PIs) quando a missão `m` roda. */
+function scAntes(v: Visao, key: string, m: Missao): { cx: number; desconhecido: boolean } {
+  let cx = 0, desconhecido = false;
+  for (const [, , qtd, , c] of v.locs[key]?.i ?? []) { if (c) cx += qtd / c; else if (qtd > 0) desconhecido = true; }
+  for (const x of v.porLoc.get(key) ?? []) {
+    if (x.id === m.id) continue;
+    const c = v.cxpPi.get(x.pi);
+    if (!c) continue;
+    const antes = x.onda < m.onda, mesma = x.onda === m.onda && x.id < m.id;
+    if (chaveDe(x.para) === key && x.tipo === "movimentacao" && (antes || mesma)) cx += x.qtd / c;
+    if (chaveDe(x.de) === key && x.tipo === "recompletamento" && antes) cx -= x.qtd / c;
+  }
+  return { cx: Math.max(0, cx), desconhecido };
+}
+
+/** O que a LOC de destino terá DEPOIS da missão, em caixas (conferência rápida). FR: caixas do PI; SC: caixas da LOC com todos os PIs. */
+function totalNoPara(m: Missao, v: Visao): { texto: string; estouro: boolean; titulo: string } | null {
+  const dest = v.locs[chaveDe(m.para)];
+  const cxp = v.cxpPi.get(m.pi);
+  if (!dest || !cxp) return null;
+  const calcado = (dest.i.find((x) => x[0] === m.pi)?.[5] ?? v.locs[chaveDe(m.de)]?.i.find((x) => x[0] === m.pi)?.[5] ?? 0) === 1;
+  if (dest.a === "FR") {
+    const antes = frAntes(v, chaveDe(m.para), m.pi, m), depois = antes + m.qtd;
+    const cx = Math.floor(depois / cxp + 1e-9), soltas = Math.round((depois - cx * cxp) * 100) / 100;
+    const lim = limiteFr(m, calcado, v.params);
+    return { texto: `${cx} cx${soltas > 0 ? ` +${fmtNum(soltas)} un` : ""}`, estouro: cx > lim, titulo: `Na LOC FR o PI estará com ${fmtNum(antes)} un antes desta missão e ${fmtNum(depois)} un depois (já contando as ondas anteriores). Máximo ${lim} cx.` };
+  }
+  const { cx, desconhecido } = scAntes(v, chaveDe(m.para), m);
+  const total = Math.round((cx + m.qtd / cxp) * 10) / 10;
+  const lim = calcado ? v.params.maxCaixasScCalcado : v.params.maxCaixasSc;
+  return { texto: `${desconhecido ? "?" : fmtNum(total)} cx na LOC SC`, estouro: desconhecido || total > lim + 1e-9, titulo: `LOC SC com todos os PIs: ${fmtNum(total)} cx depois desta missão (já contando as ondas anteriores). Limite ${lim} cx${desconhecido ? " (há PI sem caixa padrão: não dá para garantir)" : ""}.` };
+}
+
 /** Folha para os estivadores: por onda e paiol de origem, na ordem do caminho físico, com caixa de marcar. */
-function imprimir(titulo: string, missoes: Missao[], estoqueEm: string | null) {
+function imprimir(titulo: string, missoes: Missao[], estoqueEm: string | null, visao: Visao) {
   const w = window.open("", "_blank");
   if (!w) { alert("O navegador bloqueou a janela de impressão. Libere pop-ups para este site."); return; }
-  const ordenadas = [...missoes].sort((a, b) => a.onda - b.onda || a.de.dep.localeCompare(b.de.dep) || chaveRota(a.de.end).localeCompare(chaveRota(b.de.end)) || a.id.localeCompare(b.id));
+  const ordenadas = [...missoes].sort(porCaminho);
   const grupos = new Map<string, Missao[]>();
   for (const m of ordenadas) (grupos.get(`${m.onda}|${m.de.dep}`) ?? grupos.set(`${m.onda}|${m.de.dep}`, []).get(`${m.onda}|${m.de.dep}`)!).push(m);
   const agora = new Date().toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
   const secoes = [...grupos.entries()].map(([k, ms]) => {
     const [onda, dep] = k.split("|");
-    const linhas = ms.map((m) => `<tr>
-      <td class="ck">☐</td><td>${esc(m.id)}${m.nota ? `<div class="n">${esc(m.nota)}</div>` : ""}</td>
+    let ruaAtual = "";
+    const linhas = ms.map((m, n) => {
+      const rua = ruaDe(m.de.end);
+      const cab = rua !== ruaAtual ? `<tr class="rua"><td colspan="9">RUA ${esc(rua)} <small>(${ms.filter((x) => ruaDe(x.de.end) === rua).length} missão(ões); siga de cima para baixo)</small></td></tr>` : "";
+      ruaAtual = rua;
+      const t = totalNoPara(m, visao);
+      return `${cab}<tr>
+      <td class="seq">${n + 1}</td><td class="ck">☐</td><td>${esc(m.id)}${m.nota ? `<div class="n">${esc(m.nota)}</div>` : ""}</td>
       <td><b>${esc(m.pi)}</b><div>${esc(m.desc)}</div></td>
       <td class="r"><b>${esc(fmtNum(m.qtd))}</b> un${m.caixas ? `<div>${esc(fmtNum(m.caixas))} cx</div>` : ""}</td>
-      <td><b>${esc(m.de.dep)}</b> ${esc(m.de.end)}</td><td><b>${esc(m.para.dep)}</b> ${esc(m.para.end)}</td>
+      <td><b>${esc(m.de.dep)}</b> ${esc(m.de.end)}</td><td><b>${esc(m.para.dep)}</b> ${esc(m.para.end)}${t ? `<div class="n${t.estouro ? " bad" : ""}">fica com ${esc(t.texto)}</div>` : ""}</td>
       <td>${esc(m.lote)}${m.validade ? `<div>${esc(m.validade.split("-").reverse().join("/"))}</div>` : ""}</td>
-      <td class="obs">${esc(m.obs)}</td></tr>`).join("");
+      <td class="obs">${esc(m.obs)}</td></tr>`;
+    }).join("");
     return `<h2>Onda ${esc(onda)} · origem ${esc(dep)} <small>(${ms.length} missão(ões)${Number(onda) >= 2 ? ` — só depois de concluir a onda ${Number(onda) - 1}` : ""})</small></h2>
-      <table><thead><tr><th></th><th>Missão</th><th>PI / Descrição</th><th>Qtd</th><th>De</th><th>Para</th><th>Lote / Val.</th><th>Obs.</th></tr></thead><tbody>${linhas}</tbody></table>`;
+      <table><thead><tr><th>#</th><th></th><th>Missão</th><th>PI / Descrição</th><th>Qtd</th><th>De</th><th>Para</th><th>Lote / Val.</th><th>Obs.</th></tr></thead><tbody>${linhas}</tbody></table>`;
   }).join("");
   w.document.write(`<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${esc(titulo)}</title><style>
     @page { size: A4 landscape; margin: 10mm; }
@@ -271,6 +348,7 @@ function imprimir(titulo: string, missoes: Missao[], estoqueEm: string | null) {
     h2 { font-size: 13px; margin: 14px 0 4px; border-bottom: 2px solid #000; padding-bottom: 2px; } h2 small { font-weight: normal; color: #444; }
     table { width: 100%; border-collapse: collapse; } th, td { border: 1px solid #888; padding: 3px 5px; text-align: left; vertical-align: top; }
     th { background: #eee; } thead { display: table-header-group; } tr { page-break-inside: avoid; }
+    .seq { width: 22px; text-align: center; font-weight: bold; } tr.rua td { background: #ddd; font-weight: bold; font-size: 12px; } tr.rua small { font-weight: normal; } .n.bad { color: #b00; font-weight: bold; }
     .ck { width: 16px; text-align: center; font-size: 15px; } .r { text-align: right; white-space: nowrap; } .obs { width: 18%; } .n { font-size: 9px; color: #444; }
   </style></head><body>
     <h1>${esc(titulo)}</h1>
@@ -283,7 +361,8 @@ function imprimir(titulo: string, missoes: Missao[], estoqueEm: string | null) {
   setTimeout(() => w.print(), 300);
 }
 
-function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; missoes: Missao[]; geradoEm: string; estoqueEm: string | null }) {
+function Lista({ tipo, missoes, geradoEm, estoqueEm, locs, params, abertas }: { tipo: TipoMissao; missoes: Missao[]; geradoEm: string; estoqueEm: string | null; locs: Record<string, ConteudoLoc>; params: Parametros; abertas: Missao[] }) {
+  const visao = useMemo(() => criarVisao(locs, params, abertas), [locs, params, abertas]);
   const { post, trocar, recarregar, carregando } = usar();
   const [filtro, setFiltro] = useState<Filtro>("abertas");
   const [q, setQ] = useState("");
@@ -317,7 +396,7 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
 
   const lista = useMemo(() => {
     const toks = norm(q).split(/\s+/).filter(Boolean);
-    return missoes
+    return [...missoes].sort(porCaminho)
       .filter((m) => (filtro === "abertas" ? ABERTA(m.status) || m.status === "feita" : filtro === "concluidas" ? m.status === "concluida" : filtro === "canceladas" ? m.status === "cancelada" : true))
       .filter((m) => !origem || m.origem === origem)
       .filter((m) => !onda || String(m.onda) === onda)
@@ -338,8 +417,8 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
   }
 
   function exportar() {
-    const cab = ["Missão", "Onda", "Prioridade", "Status", "PI", "Descrição", "Quantidade (un)", "Caixas", "De (paiol)", "De (endereço)", "Para (paiol)", "Para (endereço)", "Lote", "Validade", "Origem da missão", "Responsável", "Observação", "Motivo", "Nota do sistema", "Criada em"];
-    const corpo = lista.map((m) => [m.id, m.onda, PRIO[m.prioridade].nome, STATUS_MISSAO.find((s) => s.id === m.status)!.nome, m.pi, m.desc, String(m.qtd).replace(".", ","), m.caixas ?? "", m.de.dep, m.de.end, m.para.dep, m.para.end, m.lote, m.validade, m.origem === "auto" ? "Automática" : "Manual", m.responsavel, m.obs, m.motivo, m.nota, fmtDataHora(m.criadaEm)]);
+    const cab = ["Seq", "Missão", "Onda", "Prioridade", "Status", "PI", "Descrição", "Quantidade (un)", "Caixas", "De (paiol)", "De (endereço)", "Para (paiol)", "Para (endereço)", "Lote", "Validade", "Origem da missão", "Responsável", "Observação", "Motivo", "Nota do sistema", "Criada em"];
+    const corpo = lista.map((m, n) => [n + 1, m.id, m.onda, PRIO[m.prioridade].nome, STATUS_MISSAO.find((s) => s.id === m.status)!.nome, m.pi, m.desc, String(m.qtd).replace(".", ","), m.caixas ?? "", m.de.dep, m.de.end, m.para.dep, m.para.end, m.lote, m.validade, m.origem === "auto" ? "Automática" : "Manual", m.responsavel, m.obs, m.motivo, m.nota, fmtDataHora(m.criadaEm)]);
     const blob = new Blob(["﻿" + csv([cab, ...corpo])], { type: "text/csv;charset=utf-8" });
     const a = document.createElement("a");
     a.href = URL.createObjectURL(blob);
@@ -373,7 +452,7 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
           <select value={origem} onChange={(e) => setOrigem(e.target.value as typeof origem)} aria-label="Origem da missão"><option value="">Automáticas e manuais</option><option value="auto">Só automáticas</option><option value="manual">Só manuais</option></select>
         </div>
         <div className="bar" style={{ justifyContent: "flex-end" }}>
-          <button className="btn" onClick={() => imprimir(`${NOME_TIPO[tipo]} — folha de missões${paiol ? ` · ${paiol}` : ""}${rua ? ` · rua ${rua.padStart(2, "0")}` : ""}`, lista, estoqueEm)} disabled={!lista.length} title="Abre a folha para imprimir, por onda e paiol, na ordem do caminho físico">🖨 Imprimir {fmtNum(lista.length)} missão(ões)</button>
+          <button className="btn" onClick={() => imprimir(`${NOME_TIPO[tipo]} — folha de missões${paiol ? ` · ${paiol}` : ""}${rua ? ` · rua ${rua.padStart(2, "0")}` : ""}`, lista, estoqueEm, visao)} disabled={!lista.length} title="Abre a folha para imprimir, por onda e paiol, na ordem do caminho físico">🖨 Imprimir {fmtNum(lista.length)} missão(ões)</button>
           <button className="btn" onClick={exportar} disabled={!lista.length}>Exportar CSV</button>
           <button className="btn" disabled={carregando} title="Cancela as missões automáticas ainda pendentes e refaz o plano com a planilha atual (missões em execução, feitas e manuais não são mexidas)" onClick={async () => {
             if (!window.confirm("Cancelar todas as missões automáticas ainda PENDENTES (desta e da outra aba) e refazer o plano com a planilha atual? Missões em execução, feitas e manuais não são alteradas.")) return;
@@ -388,13 +467,13 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
           <table>
             <thead>
               <tr>
-                <th>Onda</th><th>Prio.</th><th>Missão</th><th>PI</th><th className="n">{tipo === "recompletamento" ? "Caixas" : "Qtd (caixas se SC)"}</th><th>De</th><th>Para</th>
+                <th className="n">#</th><th>Onda</th><th>Prio.</th><th>Missão</th><th>PI</th><th className="n">{tipo === "recompletamento" ? "Caixas" : "Qtd (caixas se SC)"}</th><th>De</th><th>Para</th>
                 <th>Status</th><th>Responsável</th><th>Observação</th>
               </tr>
             </thead>
             <tbody>
-              {pagina.map((m) => (
-                <MissaoLinha key={m.id} m={m} tipo={tipo} aberto={aberto === m.id} onToggle={() => setAberto(aberto === m.id ? null : m.id)} onAlterar={alterar} />
+              {pagina.map((m, n) => (
+                <MissaoLinha key={m.id} m={m} seq={pag * POR_PAGINA + n + 1} visao={visao} tipo={tipo} aberto={aberto === m.id} onToggle={() => setAberto(aberto === m.id ? null : m.id)} onAlterar={alterar} />
               ))}
             </tbody>
           </table>
@@ -415,19 +494,76 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm }: { tipo: TipoMissao; misso
   );
 }
 
-function MissaoLinha({ m, tipo, aberto, onToggle, onAlterar }: { m: Missao; tipo: TipoMissao; aberto: boolean; onToggle: () => void; onAlterar: (m: Missao, c: Record<string, unknown>) => void }) {
+/** Conteúdo da origem e do destino pela planilha, com o efeito da missão. */
+function PainelLocs({ m, visao }: { m: Missao; visao: Visao }) {
+  const { locs, params } = visao;
+  const bloco = (rotulo: string, l: { dep: string; end: string }, ehDestino: boolean) => {
+    const k = chaveDe(l);
+    const c = locs[k];
+    if (!c) return <div className="muted small">{rotulo}: sem dados.</div>;
+    const item = c.i.find((x) => x[0] === m.pi);
+    const cxp = visao.cxpPi.get(m.pi) ?? null;
+    const calcado = (item?.[5] ?? 0) === 1;
+    const lim = c.a === "SC" ? (calcado ? params.maxCaixasScCalcado : params.maxCaixasSc) : limiteFr(m, calcado, params);
+    let hoje = "?", depois = "?";
+    if (cxp) {
+      if (c.a === "SC") {
+        const a = scAntes(visao, k, m);
+        const base = a.cx, delta = m.qtd / cxp;
+        hoje = a.desconhecido ? "?" : fmtNum(Math.round(base * 10) / 10);
+        depois = a.desconhecido ? "?" : fmtNum(Math.round((base + (ehDestino ? delta : m.tipo === "recompletamento" ? -delta : 0)) * 10) / 10);
+      } else {
+        const antes = frAntes(visao, k, m.pi, m);
+        hoje = fmtNum(Math.floor(antes / cxp + 1e-9));
+        depois = fmtNum(Math.floor(Math.max(0, antes + (ehDestino ? m.qtd : -m.qtd)) / cxp + 1e-9));
+      }
+    }
+    return (
+      <div style={{ flex: "1 1 340px", minWidth: 300 }}>
+        <strong>{rotulo}: {loc(l)} <span className="tag neutral">{c.a === "FR" ? "FR (fracionado)" : "SC (caixa fechada)"}</span></strong>
+        {c.i.length === 0 ? <p className="muted small" style={{ margin: "4px 0" }}>LOC vazia na planilha.</p> : (
+          <table className="small" style={{ width: "100%", marginTop: 4 }}>
+            <thead><tr><th>PI</th><th className="n">Un</th><th className="n">Caixas</th><th>Obs.</th></tr></thead>
+            <tbody>
+              {c.i.map(([pi, desc, qtd, bloq, cx]) => (
+                <tr key={pi} style={pi === m.pi ? { background: "var(--brand-soft, #e8f0fe)", fontWeight: 600 } : undefined}>
+                  <td className="wrapc">{pi} <span className="muted">{desc}</span></td>
+                  <td className="n">{fmtNum(qtd)}</td>
+                  <td className="n">{cx ? fmtNum(Math.round((qtd / cx) * 10) / 10) : "?"}</td>
+                  <td>{bloq > 0 ? `bloqueado ${fmtNum(bloq)}` : ""}{cx && pi === m.pi ? ` caixa de ${fmtNum(cx)}` : ""}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+        <p className="small" style={{ margin: "4px 0" }}>
+          Antes da missão: <strong>{hoje} cx</strong>{c.a === "SC" ? " na LOC (todos os PIs)" : " do PI"} → depois: <strong>{depois} cx</strong> · limite {lim} cx
+        </p>
+      </div>
+    );
+  };
+  return (
+    <div style={{ display: "flex", gap: 16, flexWrap: "wrap", margin: "6px 0" }}>
+      {bloco("Origem", m.de, false)}
+      {bloco("Destino", m.para, true)}
+    </div>
+  );
+}
+
+function MissaoLinha({ m, seq, visao, tipo, aberto, onToggle, onAlterar }: { m: Missao; seq: number; visao: Visao; tipo: TipoMissao; aberto: boolean; onToggle: () => void; onAlterar: (m: Missao, c: Record<string, unknown>) => void }) {
   const encerrada = m.status === "concluida" || m.status === "cancelada";
   const opcoes = STATUS_MISSAO.filter((s) => STATUS_MANUAIS.includes(s.id) || s.id === m.status);
   return (
     <>
       <tr className="click" onClick={onToggle} style={encerrada ? { opacity: 0.6 } : undefined}>
+        <td className="n muted">{seq}</td>
         <td><span className={`tag ${m.onda === 1 ? "ok" : "neutral"}`} title={m.onda >= 2 ? `Só depois de concluir a onda ${m.onda - 1} (libera o destino ou traz o saldo)` : "Pode ser feita já"}>{m.onda}</span></td>
         <td><span className={`tag ${PRIO[m.prioridade].tom}`}>{PRIO[m.prioridade].nome}</span></td>
         <td>{aberto ? "▾" : "▸"} {m.id}{m.origem === "manual" && <span className="tag neutral" style={{ marginLeft: 4 }}>manual</span>}</td>
         <td className="wrapc"><strong>{m.pi}</strong> {m.desc}{m.freq && m.freq !== "—" && <div className="muted small">{m.freq}{m.qtdMediaPedido ? ` · média ${fmtNum(m.qtdMediaPedido)} un/pedido` : ""}</div>}</td>
         <td className="n">{m.caixas ? <>{fmtNum(m.caixas)} cx <span className="muted small">({fmtNum(m.qtd)} un)</span></> : `${fmtNum(m.qtd)} un`}</td>
         <td title={NOME_DEPOSITO[m.de.dep]}>{loc(m.de)}</td>
-        <td title={NOME_DEPOSITO[m.para.dep]}>{loc(m.para)}</td>
+        <td title={NOME_DEPOSITO[m.para.dep]}>{loc(m.para)}{(() => { const t = totalNoPara(m, visao); return t ? <div className="small" title={t.titulo} style={{ color: t.estouro ? "var(--bad)" : "var(--ok)", fontWeight: 600 }}>fica com {t.texto}</div> : null; })()}</td>
         <td onClick={(e) => e.stopPropagation()}>
           <select value={m.status} onChange={(e) => onAlterar(m, { status: e.target.value as StatusMissao })} aria-label={`Status da missão ${m.id}`}
             style={m.status === "divergente" ? { borderColor: "var(--bad)", color: "var(--bad)" } : m.status === "concluida" ? { borderColor: "var(--ok)", color: "var(--ok)" } : undefined}>
@@ -439,8 +575,9 @@ function MissaoLinha({ m, tipo, aberto, onToggle, onAlterar }: { m: Missao; tipo
       </tr>
       {aberto && (
         <tr className="sub">
-          <td colSpan={10}>
+          <td colSpan={11}>
             <p style={{ margin: "4px 0" }}><strong>Por quê:</strong> {m.motivo}</p>
+            <PainelLocs m={m} visao={visao} />
             {m.nota && <p style={{ margin: "4px 0", color: m.status === "divergente" ? "var(--bad)" : undefined }}><strong>Sistema:</strong> {m.nota}</p>}
             <p className="muted small" style={{ margin: "4px 0" }}>
               {m.lote && <>Lote {m.lote}{m.validade ? ` · validade ${m.validade.split("-").reverse().join("/")}` : ""} · </>}

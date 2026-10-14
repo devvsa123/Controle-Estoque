@@ -23,7 +23,37 @@ function comVazios(p: Parametros, v: Vazios): Parametros {
   return { ...p, locsVazias: uniao(p.locsVazias, v.fr), locsVaziasSc: uniao(p.locsVaziasSc, v.sc) };
 }
 
+/** Conteúdo (hoje, pela planilha) de cada LOC citada por missões abertas: área, e por PI o saldo, o bloqueado, a caixa padrão e se é calçado. */
+export interface ConteudoLoc { a: "FR" | "SC"; i: [pi: string, desc: string, qtd: number, bloq: number, cxp: number | null, calcado: 0 | 1][] }
+
+function conteudoDasLocs(ctx: ReturnType<typeof montarContexto>, dados: Awaited<ReturnType<typeof obterEstoque>>, abertas: Missao[]): Record<string, ConteudoLoc> {
+  const chaves = new Set<string>();
+  for (const m of abertas) { chaves.add(chaveLoc(m.de)); chaves.add(chaveLoc(m.para)); }
+  const por = new Map<string, Map<string, { qtd: number; bloq: number }>>();
+  for (const l of dados.linhas) {
+    if (l.area !== "FR" && l.area !== "SC") continue;
+    const k = l.dep + "|" + l.end;
+    if (!chaves.has(k) || !(l.total > 0 || l.disp > 0)) continue;
+    const mp = por.get(k) ?? por.set(k, new Map()).get(k)!;
+    const it = mp.get(l.pi) ?? mp.set(l.pi, { qtd: 0, bloq: 0 }).get(l.pi)!;
+    it.qtd += l.total; if (!l.livre) it.bloq += l.total;
+  }
+  const out: Record<string, ConteudoLoc> = {};
+  const fr = (v: Local) => ctx.params.locsVazias.some((x) => chaveLoc(x) === chaveLoc(v));
+  for (const m of abertas) for (const [v, ehDestino] of [[m.de, false], [m.para, true]] as const) {
+    const k = chaveLoc(v);
+    if (out[k]) continue;
+    const ar = ctx.areasLoc.get(k);
+    const a: "FR" | "SC" = ar?.has("FR") ? "FR" : ar?.has("SC") ? "SC" : fr(v) ? "FR"
+      : !ehDestino ? (m.tipo === "recompletamento" ? "SC" : "FR")
+      : m.tipo === "recompletamento" || /^(Juntar|Faltam LOCs|Levar para)/.test(m.motivo) ? "FR" : "SC";
+    out[k] = { a, i: [...(por.get(k) ?? [])].sort((x, y) => (x[0] < y[0] ? -1 : 1)).map(([pi, v2]) => [pi, ctx.produtoDesc(pi), v2.qtd, v2.bloq, ctx.cxpDe(pi) ?? null, ctx.ehCalcado(pi) ? 1 : 0]) };
+  }
+  return out;
+}
+
 export interface RespostaMissoes {
+  locs: Record<string, ConteudoLoc>;
   missoes: Missao[];
   params: Parametros;
   alertas: Alerta[];
@@ -128,6 +158,7 @@ export async function sincronizarEListar(): Promise<RespostaMissoes> {
   return {
     missoes: lista.sort((a, b) => a.onda - b.onda || a.prioridade - b.prioridade || a.id.localeCompare(b.id)),
     auditoria: { ...aud, violacoes: aud.violacoes.slice(0, 100), total: aud.violacoes.length },
+    locs: conteudoDasLocs(ctx, dados, lista.filter((m) => EM_ANDAMENTO(m.status))),
     params: estado.params, alertas, conformidade: conf, resumo, rmErro, estoqueEm: dados.atualizadoEm, geradoEm: agora,
     vazios: { fr: vazios.fr.length, sc: vazios.sc.length, arquivo: vazios.arquivo, atualizadoEm: vazios.atualizadoEm, erro: vazios.erro },
   };
