@@ -175,16 +175,18 @@ export function conformidade(ctx: Contexto): Conformidade {
   const c: Conformidade = { locs: 0, conformes: 0, maisDeUmPi: 0, acimaDoMaximo: 0, abaixoDoMinimo: 0, pisSemLoc: 0 };
   const noFr = new Set<string>();
   for (const [k, itens] of sim) {
-    if (ehZona(locDe(k)) || itens.size === 0) continue;
+    if (itens.size === 0) continue;
     for (const pi of itens.keys()) noFr.add(pi);
     const ativos = [...itens.keys()].filter((pi) => ctx.dem.get(pi)?.frac && !ctx.est.get(pi)?.noP04);
     if (!ativos.length) continue; // LOC só de itens sem pedido fracionado: fora do escopo do padrão
     c.locs++;
     let ok = true;
-    if (itens.size > 1) { c.maisDeUmPi++; ok = false; }
+    // 2 PIs na mesma LOC só valem quando faltam LOCs no paiol: ambos de fracionado e com até `caixasZona` caixas cada
+    const compart = itens.size === 2 && ativos.length === 2 && ativos.every((pi) => Math.floor(itens.get(pi)!.qtd / ctx.limites(pi)!.cxp + EPS) <= ctx.params.caixasZona);
+    if (itens.size > 1 && !compart) { c.maisDeUmPi++; ok = false; }
     for (const pi of ativos) {
       const lim = ctx.limites(pi)!, it = itens.get(pi)!;
-      if (Math.floor(it.qtd / lim.cxp + EPS) > lim.maxCx) { c.acimaDoMaximo++; ok = false; }
+      if (Math.floor(it.qtd / lim.cxp + EPS) > (compart ? Math.min(lim.maxCx, ctx.params.caixasZona) : lim.maxCx)) { c.acimaDoMaximo++; ok = false; }
       if (it.qtd < lim.minUn - EPS && itens.size === 1) { c.abaixoDoMinimo++; ok = false; }
     }
     if (ok) c.conformes++;
@@ -227,7 +229,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   }
 
   const todasLocs = () => [...sim.keys()].sort();
-  const primLocs = () => todasLocs().filter((k) => !ehZona(locDe(k)));
+  const primLocs = () => todasLocs();
   const protegido = (pi: string) => !!ctx.est.get(pi)?.noP04;
 
   // PIs ativos: já tiveram pedido fracionado, têm caixa padrão conhecida e algum saldo
@@ -239,6 +241,26 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     .map(([pi]) => pi);
   const ehAtivo = new Set(ativos);
 
+  // Paiol de cada PI ativo: o que tem MAIS saldo do PI (FR + SC). Tudo é resolvido dentro do paiol; a escolha só muda se o outro passar de 50% a mais.
+  const depsSim = new Set([...sim.keys()].map((k) => locDe(k).dep));
+  const totDep = new Map<string, Map<string, number>>();
+  for (const l of ctx.dados.linhas) {
+    if (!ehAtivo.has(l.pi) || !depsSim.has(l.dep) || ctx.dados.escopos[l.dep] !== "estoque") continue;
+    const m = totDep.get(l.pi) ?? totDep.set(l.pi, new Map()).get(l.pi)!;
+    m.set(l.dep, (m.get(l.dep) ?? 0) + l.total);
+  }
+  const paiolDe = new Map<string, string>();
+  const paiolEfet = new Map<string, string>(); // destino de missão em andamento define o paiol
+  for (const m of [...efet].sort((a, b) => (a.id < b.id ? -1 : 1))) if (m.tipo === "movimentacao" && sim.has(chaveLoc(m.para)) && !paiolEfet.has(m.pi)) paiolEfet.set(m.pi, m.para.dep);
+  for (const pi of ativos) {
+    const ord = [...(totDep.get(pi) ?? [])].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1));
+    let dep = ord[0]?.[0] ?? "";
+    const prev = paiolEfet.get(pi) ?? (casasPrev[pi] ? locDe(casasPrev[pi]).dep : zonaPrev[pi] ? locDe(zonaPrev[pi]).dep : "");
+    if (prev && prev !== dep && depsSim.has(prev) && (paiolEfet.has(pi) || (totDep.get(pi)?.get(prev) ?? 0) * 1.5 >= (totDep.get(pi)?.get(dep) ?? 0))) dep = prev;
+    paiolDe.set(pi, dep);
+  }
+  const noPaiol = (pi: string, k: string) => locDe(k).dep === paiolDe.get(pi);
+
   // ---- 1) casa de cada PI ativo
   const casaLoc = new Map<string, string>(); // loc → pi
   const casaDe = new Map<string, string>(); // pi → loc
@@ -246,22 +268,22 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   // 1.0) tabela mestre: a casa anterior continua valendo enquanto for válida (LOC existe no escopo e o PI segue ativo)
   for (const pi of ativos) {
     const k = casasPrev[pi];
-    if (k && sim.has(k) && !ehZona(locDe(k)) && !casaLoc.has(k)) { casaLoc.set(k, pi); casaDe.set(pi, k); continue; }
+    if (k && sim.has(k) && noPaiol(pi, k) && !casaLoc.has(k)) { casaLoc.set(k, pi); casaDe.set(pi, k); continue; }
     const z = zonaPrev[pi];
-    if (z && sim.has(z) && ehZona(locDe(z))) zonaPre.set(pi, z);
+    if (z && sim.has(z) && noPaiol(pi, z)) zonaPre.set(pi, z);
   }
   // 1a) o destino de uma missão em andamento já é a casa do PI (o plano não muda de ideia entre planilhas)
   for (const m of [...efet].sort((a, b) => (a.id < b.id ? -1 : 1))) {
     if (!ehAtivo.has(m.pi) || casaDe.has(m.pi) || zonaPre.has(m.pi)) continue;
     const para = chaveLoc(m.para);
     if (!sim.has(para)) continue; // destino SC (devolução)
-    if (ehZona(m.para)) { zonaPre.set(m.pi, para); continue; }
+    if (zonaPrev[m.pi] === para) { zonaPre.set(m.pi, para); continue; }
     if (!casaLoc.has(para)) { casaLoc.set(para, m.pi); casaDe.set(m.pi, para); }
   }
   // 1b) senão, a LOC onde ele já está (sozinho e com mais saldo)
   for (const pi of ativos) {
     if (casaDe.has(pi) || zonaPre.has(pi)) continue;
-    const cand = primLocs().filter((k) => qtdSim(sim, k, pi) > EPS && !casaLoc.has(k))
+    const cand = primLocs().filter((k) => noPaiol(pi, k) && qtdSim(sim, k, pi) > EPS && !casaLoc.has(k))
       .sort((a, b) => Number(sim.get(b)!.size === 1) - Number(sim.get(a)!.size === 1) || qtdSim(sim, b, pi) - qtdSim(sim, a, pi) || (a < b ? -1 : 1));
     if (cand.length) { casaLoc.set(cand[0], pi); casaDe.set(pi, cand[0]); }
   }
@@ -308,9 +330,10 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
       .sort((a, b) => Number(locDe(b).dep === depOrigem) - Number(locDe(a).dep === depOrigem) || Number(ruaDeLoc(b) === ruaOrigem) - Number(ruaDeLoc(a) === ruaOrigem) || (rotaMemo(a) < rotaMemo(b) ? -1 : 1));
   /** Distribui `caixas` entre as LOCs SC do PI (mesmo paiol primeiro) e, se faltar espaço, LOCs SC vazias; respeita a capacidade. */
   const alocarSc = (pi: string, depOrigem: string, origemKey: string, caixas: number): { k: string; cx: number }[] => {
-    const proprias = locsScDoPi(pi).sort((a, b) => Number(locDe(b).dep === depOrigem) - Number(locDe(a).dep === depOrigem));
+    // só LOCs SC do mesmo paiol da origem: o que está no P05 fica no P05
+    const proprias = locsScDoPi(pi).filter((k) => locDe(k).dep === depOrigem);
     const ruaOrigem = ruaDeLoc(origemKey);
-    const cands = [...new Set([...proprias, ...(scNovasDoPi.get(pi) ?? []), ...vaziasScLivres(depOrigem, ruaOrigem)])];
+    const cands = [...new Set([...proprias, ...(scNovasDoPi.get(pi) ?? []).filter((k) => locDe(k).dep === depOrigem), ...vaziasScLivres(depOrigem, ruaOrigem).filter((k) => locDe(k).dep === depOrigem)])];
     const out: { k: string; cx: number }[] = [];
     let falta = caixas;
     for (const k of cands) {
@@ -325,31 +348,25 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     return out;
   };
   const locsScVazias = params.locsVaziasSc.map(chaveLoc);
-  const temVaziaSc = () => locsScVazias.some((x) => !ctx.areasLoc.has(x) && !scOcup.has(x) && !alvoEfetSc.has(x));
-  const podeDevolverSc = (pi: string) => !!ctx.cxpDe(pi) && (temVaziaSc() || locsScDoPi(pi).some((k) => roomSc(pi, k) > 0) || (scNovasDoPi.get(pi) ?? []).some((k) => roomSc(pi, k) > 0));
+  const temVaziaSc = (dep: string) => locsScVazias.some((x) => locDe(x).dep === dep && !ctx.areasLoc.has(x) && !scOcup.has(x) && !alvoEfetSc.has(x));
+  const podeDevolverSc = (pi: string, dep: string) => !!ctx.cxpDe(pi) && (temVaziaSc(dep) || locsScDoPi(pi).some((k) => locDe(k).dep === dep && roomSc(pi, k) > 0) || (scNovasDoPi.get(pi) ?? []).some((k) => locDe(k).dep === dep && roomSc(pi, k) > 0));
 
   // ---- 2) quem ainda não tem casa: LOC livre de menor custo; senão, zona de baixo giro
-  const preferDep = (pi: string) => {
-    const por = new Map<string, number>();
-    for (const l of ctx.linhasSc.get(pi) ?? []) por.set(l.dep, (por.get(l.dep) ?? 0) + l.disp);
-    return [...por.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
-  };
   const evictavel = (k: string) => {
     for (const [r, it] of sim.get(k)!) {
       if (it.bloq > EPS || protegido(r)) return false;
-      if (!ehAtivo.has(r) && !podeDevolverSc(r)) return false;
+      if (!ehAtivo.has(r) && !podeDevolverSc(r, locDe(k).dep)) return false;
     }
     return true;
   };
   const semCasa = ativos.filter((pi) => !casaDe.has(pi) && !zonaPre.has(pi));
   const naZona: string[] = [...zonaPre.keys()].sort();
   for (const pi of semCasa) {
-    const pref = preferDep(pi);
-    const cand = primLocs().filter((k) => !casaLoc.has(k) && evictavel(k)).map((k) => {
+    const cand = primLocs().filter((k) => noPaiol(pi, k) && !casaLoc.has(k) && evictavel(k)).map((k) => {
       const m = sim.get(k)!;
       let un = 0; for (const it of m.values()) un += it.qtd;
-      return { k, vazia: m.size === 0 ? 0 : 1, depOk: locDe(k).dep === pref ? 0 : 1, n: m.size, un };
-    }).sort((a, b) => a.vazia - b.vazia || a.depOk - b.depOk || a.n - b.n || a.un - b.un || (a.k < b.k ? -1 : 1));
+      return { k, vazia: m.size === 0 ? 0 : 1, n: m.size, un };
+    }).sort((a, b) => a.vazia - b.vazia || a.n - b.n || a.un - b.un || (a.k < b.k ? -1 : 1));
     if (cand.length) { casaLoc.set(cand[0].k, pi); casaDe.set(pi, cand[0].k); } else naZona.push(pi);
   }
   // 2b) falta de LOC: quem tem MENOS saída cede a LOC para quem tem MAIS saída e vai para a zona de baixo giro.
@@ -357,13 +374,14 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   const comMissao = new Set<string>();
   for (const m of efet) comMissao.add(chaveLoc(m.para));
   const maisSaida = (x: string, y: string) => ctx.dem.get(x)!.n12 > ctx.dem.get(y)!.n12 * 1.5 + 2;
-  const faltantes = ativos.filter((pi) => !casaDe.has(pi));
-  const donos = ativos.filter((pi) => casaDe.has(pi)).reverse(); // do menor giro para o maior
+  const trocarNoPaiol = (dep: string) => {
+  const faltantes = ativos.filter((pi) => !casaDe.has(pi) && paiolDe.get(pi) === dep);
+  const donos = ativos.filter((pi) => casaDe.has(pi) && paiolDe.get(pi) === dep).reverse(); // do menor giro para o maior
   const evictavelSem = (k: string, dono: string) => {
     for (const [r, it] of sim.get(k)!) {
       if (r === dono) { if (it.bloq > EPS) return false; continue; }
       if (it.bloq > EPS || protegido(r)) return false;
-      if (!ehAtivo.has(r) && !podeDevolverSc(r)) return false;
+      if (!ehAtivo.has(r) && !podeDevolverSc(r, locDe(k).dep)) return false;
     }
     return true;
   };
@@ -376,22 +394,32 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     casaDe.delete(y); casaLoc.set(k, x); casaDe.set(x, k); zonaPre.delete(x);
     iF++; iD++;
   }
-  const zonaLocs = todasLocs().filter((k) => ehZona(locDe(k)));
-  const zonaDe = new Map<string, string>();
-  // ocupação futura da zona: quem tem casa própria vai embora da zona, então não ocupa vaga
-  const ocupZona = new Map<string, number>(zonaLocs.map((k) => [k, [...sim.get(k)!.keys()].filter((pi) => !(ehAtivo.has(pi) && casaDe.has(pi))).length]));
+  };
+  for (const dep of [...depsSim].sort()) trocarNoPaiol(dep);
+  // 2c) falta de LOC no paiol: 2 PIs por LOC. Os PIs de MENOR saída do paiol dividem a LOC (cada um com `caixasZona` caixas no máximo).
+  //     O "hóspede" (sem casa) vai para a LOC de um "anfitrião", começando pelos anfitriões de menor saída; um anfitrião recebe um hóspede só.
+  const zonaDe = new Map<string, string>(); // PI hóspede → LOC do anfitrião
+  const hospedeDe = new Map<string, string>(); // LOC → PI hóspede
   const semLugar: string[] = [];
   const semLugarPis: string[] = [];
-  naZona.length = 0;
-  for (const pi of ativos) if (!casaDe.has(pi)) naZona.push(pi); // ordem de prioridade: os de maior saída pegam vaga primeiro
-  for (const pi of naZona) {
-    const ja = zonaPre.get(pi) ?? zonaLocs.find((k) => sim.get(k)!.has(pi));
-    const k = ja ?? zonaLocs.filter((z) => (ocupZona.get(z) ?? 0) < params.pisPorLocZona).sort((a, b) => (ocupZona.get(a)! - ocupZona.get(b)!) || (a < b ? -1 : 1))[0];
-    if (!k) { semLugar.push(nome(pi)); semLugarPis.push(pi); continue; }
-    zonaDe.set(pi, k);
-    // só não soma se o PI já está fisicamente na LOC (já contado); PI da tabela mestre ainda sem saldo lá também ocupa vaga
-    if (!sim.get(k)?.has(pi)) ocupZona.set(k, (ocupZona.get(k) ?? 0) + 1);
+  for (const dep of [...depsSim].sort()) {
+    const hospedes = ativos.filter((pi) => !casaDe.has(pi) && paiolDe.get(pi) === dep); // maior saída primeiro
+    for (const pi of hospedes) { // preserva o arranjo anterior enquanto o anfitrião seguir válido
+      const z = zonaPre.get(pi);
+      if (z && casaLoc.has(z) && casaLoc.get(z) !== pi && !hospedeDe.has(z) && locDe(z).dep === dep) { zonaDe.set(pi, z); hospedeDe.set(z, pi); }
+    }
+    const anfitrioes = [...ativos].reverse().filter((pi) => casaDe.has(pi) && paiolDe.get(pi) === dep && !hospedeDe.has(casaDe.get(pi)!));
+    let h = 0;
+    for (const pi of hospedes) {
+      if (zonaDe.has(pi)) continue;
+      while (h < anfitrioes.length && hospedeDe.has(casaDe.get(anfitrioes[h])!)) h++;
+      if (h >= anfitrioes.length) { semLugar.push(nome(pi)); semLugarPis.push(pi); continue; }
+      const k = casaDe.get(anfitrioes[h++])!;
+      zonaDe.set(pi, k); hospedeDe.set(k, pi);
+    }
   }
+  for (const pi of ativos) if (!casaDe.has(pi) && !zonaDe.has(pi) && !semLugarPis.includes(pi)) { semLugar.push(nome(pi)); semLugarPis.push(pi); }
+  const compart = new Set(hospedeDe.keys()); // LOCs com 2 PIs
 
   // ---- 3) movimentações FR→FR e FR→SC
   const propostas: Proposta[] = [];
@@ -405,7 +433,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   const limFr = (pi: string, k: string): number => {
     const lim = ctx.limites(pi);
     if (!lim) return Infinity;
-    return ehZona(locDe(k)) ? Math.min(lim.maxUn, params.caixasZona * lim.cxp) : lim.maxUn;
+    return compart.has(k) ? Math.min(lim.maxUn, params.caixasZona * lim.cxp) : lim.maxUn;
   };
 
   const semCxp: string[] = [], soltas: string[] = [];
@@ -430,7 +458,6 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
 
   for (const k of todasLocs()) {
     const itens = [...sim.get(k)!.keys()].sort();
-    const zona = ehZona(locDe(k));
     for (const pi of itens) {
       const it = sim.get(k)?.get(pi);
       if (!it || protegido(pi)) continue;
@@ -439,7 +466,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
       const movivel = it.qtd - it.bloq;
       if (!alvo) {
         // PI sem lugar definido (inativo ou sem LOC): só sai se estiver atrapalhando a casa de outro PI
-        if (zona || !casaLoc.has(k)) continue;
+        if (!casaLoc.has(k)) continue;
         if (movivel <= EPS) { bloqueios.push(`${nome(pi)} na LOC ${k.replace("|", " ")}`); continue; }
         devolver(pi, k, movivel, ehAtivo.has(pi)
           ? `Sem LOC disponível no FR para este PI (baixa saída): liberar a LOC ${locDe(k).end}, casa do PI ${casaLoc.get(k)}, devolvendo ao SC`
@@ -447,6 +474,11 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
         continue;
       }
       if (movivel <= EPS) { bloqueios.push(`${nome(pi)} na LOC ${k.replace("|", " ")}`); continue; }
+      if (locDe(k).dep !== locDe(alvo).dep) {
+        // fora do paiol do PI (o de maior saldo): não atravessa paiol, volta em caixas fechadas para o SC do próprio paiol
+        devolver(pi, k, movivel, `Fora do paiol ${locDe(alvo).dep} do PI (maior saldo): devolver ao SC do ${locDe(k).dep}`, 3);
+        continue;
+      }
       const room = Math.max(0, limFr(pi, alvo) - qtdSim(sim, alvo, pi));
       let q = Math.min(movivel, room);
       // o que não cabe na casa: caixas inteiras voltam ao SC; a sobra solta (menos de 1 caixa) vai junto para a casa
@@ -462,7 +494,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
       } else if (resto > EPS) semCxp.push(`${nome(pi)} (${fmt(resto)} un em ${k.replace("|", " ")})`);
       if (q > EPS) {
         propostas.push(novaProposta("movimentacao", pi, locDe(k), locDe(alvo), q, 2,
-          !ehZona(locDe(alvo)) ? `Juntar o PI na sua LOC ${locDe(alvo).end} (1 PI por LOC)` : `Levar para a zona de baixo giro (${locDe(alvo).end}): falta LOC própria`,
+          !compart.has(alvo) ? `Juntar o PI na sua LOC ${locDe(alvo).end} (1 PI por LOC)` : `Faltam LOCs no ${locDe(alvo).dep}: este PI de baixa saída divide a LOC ${locDe(alvo).end} com outro (2 PIs por LOC, até ${params.caixasZona} caixas cada)`,
           { chave: `A|${pi}|${k}|${alvo}` }));
         sairSim(sim, k, pi, q); entrarSim(sim, alvo, pi, q);
       }
@@ -548,13 +580,13 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   };
   mk("rc-sem-origem", "critico", "Recompletamento precisa de caixas fechadas em SC", "FR abaixo do mínimo sem caixa fechada livre em SC", "Não há caixa fechada livre em SC para repor (o saldo pode estar bloqueado ou fracionado).", semOrigem, "recompletamento");
   mk("rc-parcial", "atencao", "Recompletamento cobre a meta", "SC não cobre toda a reposição necessária", "Há caixas em SC, mas não o bastante para atingir a meta.", parcial, "recompletamento");
-  mk("mv-sem-destino-sc", "atencao", "Excedente volta para o SC", "Sem espaço em LOC SC para devolver o excedente", "As LOCs SC do PI estão cheias (limite de caixas por LOC) ou o PI não tem LOC SC. Informe LOCs SC vazias em Parâmetros.", semDestinoSc, "movimentacao");
+  mk("mv-sem-destino-sc", "atencao", "Excedente volta para o SC", "Sem espaço em LOC SC para devolver o excedente", "As LOCs SC do PI neste paiol estão cheias (limite de caixas por LOC) ou o PI não tem LOC SC nele, e não há LOC SC vazia no mesmo paiol. A devolução não atravessa paiol.", semDestinoSc, "movimentacao");
   mk("mv-sem-cxp", "atencao", "FR → SC em caixas fechadas", "Sem caixa padrão (CXP) para devolver ao SC", "A devolução ao SC só é feita em caixas fechadas, e este PI não tem CXP conhecida (nenhum pedido na planilha de pedidos).", semCxp, "movimentacao");
   mk("mv-soltas", "info", "FR → SC em caixas fechadas", "Sobra solta (menos de 1 caixa) não volta ao SC", "Só caixas fechadas voltam ao SC; unidades soltas menores que 1 caixa permanecem na LOC.", soltas, "movimentacao");
   mk("mv-bloqueio", "atencao", "1 PI por LOC", "Saldo bloqueado impede esvaziar a LOC", "O PI tem saldo bloqueado nesta LOC: resolva o bloqueio antes de movimentar.", bloqueios, "movimentacao");
   mk("mv-sem-lugar", "critico", "Todo PI fracionado precisa de uma LOC",
-    `Faltou LOC até na zona de baixo giro: ${semLugar.length} PI(s) sem lugar`,
-    `Há ${ativos.length} PIs com fracionado, ${casaDe.size} com LOC própria e ${zonaDe.size} na zona de baixo giro (rua 01 do P02: ${zonaLocs.length} LOCs × ${params.pisPorLocZona} PIs). Faltam LOCs para ${semLugar.length} PIs (os de menor saída); o saldo deles no FR é devolvido ao SC. Para mantê-los no FR, informe LOCs FR vazias em Parâmetros (da rua 01 do P02, de preferência) ou aumente "PIs por LOC da zona".`,
+    `Faltou LOC no paiol, mesmo com 2 PIs por LOC: ${semLugar.length} PI(s) sem lugar`,
+    `Há ${ativos.length} PIs com fracionado, ${casaDe.size} com LOC própria e ${zonaDe.size} dividindo LOC (2 por LOC). Faltam LOCs para ${semLugar.length} PIs (os de menor saída do paiol); o saldo deles no FR é devolvido ao SC. Para mantê-los no FR, libere LOCs FR vazias no paiol (consulta de endereços vazios ou Parâmetros).`,
     semLugar, "movimentacao");
 
   propostas.sort((a, b) => a.onda - b.onda || a.prioridade - b.prioridade || (a.chave < b.chave ? -1 : 1));
@@ -748,7 +780,7 @@ export function alertasDoEstado(ctx: Contexto, missoes: Missao[], conf: Conformi
     if (outros.length && !ocup.has(m.pi) && m.onda === 1 && m.origem === "manual") conflito.push(`${m.id} · destino ${m.para.dep} ${m.para.end} também tem ${outros.slice(0, 3).join(", ")}`);
     const lim = ctx.limites(m.pi);
     const emDest = ctx.livreLoc.get(`${m.pi}|${chaveLoc(m.para)}`) ?? 0;
-    if (lim && !ehZona(m.para) && Math.floor((emDest + m.qtd) / lim.cxp + EPS) > lim.maxCx && m.para.dep && ctx.areasLoc.get(chaveLoc(m.para))?.has("FR")) estouro.push(`${m.id} · ${m.pi}: ${fmt(emDest + m.qtd)} un no destino > máximo ${fmt(lim.maxUn)}`);
+    if (lim && Math.floor((emDest + m.qtd) / lim.cxp + EPS) > lim.maxCx && m.para.dep && ctx.areasLoc.get(chaveLoc(m.para))?.has("FR")) estouro.push(`${m.id} · ${m.pi}: ${fmt(emDest + m.qtd)} un no destino > máximo ${fmt(lim.maxUn)}`);
     const idade = Date.parse(agora) - Date.parse(m.atualizadoEm);
     if ((m.status === "pendente" && idade > 2 * DIA) || (m.status === "em_execucao" && idade > 1 * DIA)) paradas.push(`${m.id} · ${m.status === "pendente" ? "pendente" : "em execução"} há ${Math.floor(idade / DIA)} dia(s)`);
     if (ctx.est.get(m.pi)?.noP04) foraRegra.push(`${m.id} · ${m.pi} tem saldo no P04 (fora das regras de reposição)`);
@@ -825,7 +857,7 @@ export function validarManual(e: EntradaManual, ctx: Contexto, missoes: Missao[]
   if (areasPara?.has("FR")) {
     const ocupDest = ctx.ocupFr.get(chaveLoc(e.para)) ?? new Set<string>();
     const outros = [...ocupDest].filter((p) => p !== e.pi);
-    if (outros.length && !ocupDest.has(e.pi) && !ehZona(e.para)) aviso(`O destino já tem outro PI (${outros.slice(0, 3).join(", ")}): a regra de 1 PI por LOC será quebrada.`);
+    if (outros.length && !ocupDest.has(e.pi)) aviso(`O destino já tem outro PI (${outros.slice(0, 3).join(", ")}): a regra de 1 PI por LOC será quebrada.`);
     const noDest = ctx.livreLoc.get(`${e.pi}|${chaveLoc(e.para)}`) ?? 0;
     if (lim && Math.floor((noDest + qtd) / lim.cxp + EPS) > lim.maxCx) aviso(`O destino ficaria com ${fmt(noDest + qtd)} un, acima do máximo de ${lim.maxCx} caixa(s) (${fmt(lim.maxUn)} un).`);
   }

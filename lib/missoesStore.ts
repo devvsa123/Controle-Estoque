@@ -9,7 +9,7 @@ import {
   alertasDoEstado, chaveLoc, conformidade, criarMissoes, efetivas, montarContexto, planejar, validarManual, verificarEstado, type EntradaManual, type Plano,
 } from "./missoesLogica";
 
-const vazio = (): EstadoMissoes => ({ versao: 3, seq: { R: 0, A: 0 }, missoes: {}, params: { ...PARAMS_PADRAO_MISSOES }, casas: {}, zona: {} });
+const vazio = (): EstadoMissoes => ({ versao: 4, seq: { R: 0, A: 0 }, missoes: {}, params: { ...PARAMS_PADRAO_MISSOES }, casas: {}, zona: {} });
 const mesclar = (p: Partial<Parametros> | undefined): Parametros => ({ ...PARAMS_PADRAO_MISSOES, ...(p ?? {}) });
 
 /** Parâmetros usados no planejamento: as LOCs vazias da consulta do WMS somam-se às informadas à mão (nada disso é gravado nos parâmetros). */
@@ -46,7 +46,7 @@ function cancelarPendentesAuto(e: EstadoMissoes, agora: string, motivo: string):
 /** Migra versões antigas: v1 (lógica por média de dias) e v2 (antes dos limites de caixas no SC e das LOCs vazias do WMS). */
 function migrar(e: EstadoMissoes, agora: string): boolean {
   const v = (e as { versao: number }).versao;
-  if (v === 3) return false;
+  if (v === 4) return false;
   if (v < 2) {
     for (const m of Object.values(e.missoes)) {
       if (m.origem === "auto" && m.status === "em_execucao") { m.status = "cancelada"; m.motivoCancelamento = "Substituída pela nova lógica de endereçamento (mín./máx. de caixas por LOC)"; m.atualizadoEm = agora; }
@@ -54,8 +54,9 @@ function migrar(e: EstadoMissoes, agora: string): boolean {
     }
     e.params = mesclar(undefined);
   }
-  cancelarPendentesAuto(e, agora, "Refeita: limites de caixas por LOC (FR e SC) e LOCs vazias do WMS passaram a valer");
-  (e as { versao: number }).versao = 3;
+  cancelarPendentesAuto(e, agora, "Refeita: movimentações agora ficam dentro do paiol (paiol de maior saldo do PI) e faltou LOC passa a ser 2 PIs por LOC");
+  e.casas = {}; e.zona = {}; // a tabela mestre é refeita por paiol
+  (e as { versao: number }).versao = 4;
   return true;
 }
 
@@ -64,7 +65,8 @@ export async function refazerPendentes(): Promise<number> {
   let n = 0;
   await atualizarJson(ARQUIVO_MISSOES, vazio, (e) => {
     n = cancelarPendentesAuto(e, new Date().toISOString(), "Refeita a pedido: o plano foi recalculado com a planilha atual");
-    return n > 0;
+    e.casas = {}; e.zona = {};
+    return true;
   });
   return n;
 }
