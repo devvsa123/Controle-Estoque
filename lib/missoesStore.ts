@@ -1,8 +1,8 @@
 import { atualizarJson, lerJson } from "./blobJson";
 import { ARQUIVO_MISSOES } from "./config";
 import { auditar, type ResultadoAuditoria } from "./auditoria";
-import { obterEstoque, obterRm, obterVazios } from "./fontes";
-import type { Vazios } from "./vazios";
+import { obterEstoque, obterRm } from "./fontes";
+import { vaziosDoEstoque, type Vazios } from "./vazios";
 import {
   ABERTA, EM_ANDAMENTO, PARAMS_PADRAO_MISSOES, STATUS_MISSAO, type Alerta, type AvisoValidacao, type Conformidade, type EstadoMissoes, type Local, type Missao, type Parametros, type StatusMissao,
 } from "./missoes";
@@ -107,7 +107,7 @@ export async function refazerPendentes(): Promise<number> {
 export async function sincronizarEListar(): Promise<RespostaMissoes> {
   const dados = await obterEstoque();
   const { rm, erro: rmErro } = await obterRm();
-  const vazios = await obterVazios();
+  const vazios = vaziosDoEstoque(dados);
   const agora = new Date().toISOString();
 
   const estado = await atualizarJson(ARQUIVO_MISSOES, vazio, (e) => {
@@ -211,7 +211,7 @@ export async function criarManual(entrada: EntradaManual, forcar: boolean): Prom
   const dados = await obterEstoque();
   const { rm } = await obterRm();
   const { dados: atual } = await lerJson(ARQUIVO_MISSOES, vazio);
-  const ctx = montarContexto(dados, rm, comVazios(mesclar(atual.params), await obterVazios()));
+  const ctx = montarContexto(dados, rm, comVazios(mesclar(atual.params), vaziosDoEstoque(dados)));
   const { avisos, qtd } = validarManual(e, ctx, Object.values(atual.missoes));
   if (avisos.some((a) => a.nivel === "erro")) throw new AvisosError(avisos, true);
   if (avisos.length && !forcar) throw new AvisosError(avisos, false);

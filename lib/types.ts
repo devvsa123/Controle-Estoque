@@ -24,7 +24,11 @@ export interface Produto {
   cxp?: number; // caixa padrão (unidades por caixa), quando a planilha de estoque tem a coluna CXP
 }
 
+/** Posição livre que a própria planilha de estoque traz (linha com PI "VAZIO" / "POSICAO LIVRE/VAZIA"). */
+export interface PosicaoVazia { dep: string; area: string; end: string }
+
 export interface Dados {
+  vazias: PosicaoVazia[]; // endereços vazios do WMS, por paiol e área
   atualizadoEm: string | null; // quando a planilha foi enviada
   fonte: "blob" | "local";
   linhas: Linha[]; // somente depósitos que entram no controle (estoque + recebimento) e fora
