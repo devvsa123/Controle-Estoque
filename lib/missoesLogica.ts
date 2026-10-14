@@ -61,6 +61,8 @@ export interface Contexto {
   areasLoc: Map<string, Set<string>>;
   scQtd: Map<string, Map<string, number>>; // LOC SC → PI → saldo total (qualquer status), para a capacidade em caixas
   produtoDesc: (pi: string) => string;
+  cxpDe: (pi: string) => number | undefined; // caixa padrão: coluna CXP da planilha de estoque ou, na falta, a dos pedidos
+  scCaixas: (loc: string) => number; // caixas em uma LOC de SC somando TODOS os PIs (Infinity se algum PI não tem caixa padrão conhecida)
   ehCalcado: (pi: string) => boolean;
   limites: (pi: string) => Limites | null;
 }
@@ -100,8 +102,19 @@ export function montarContexto(dados: Dados, rm: RmDados | null, paramsEntrada: 
   };
   const dem = demandaFracionada(rm);
   const calcado = (pi: string) => CALCADOS_PRIMEIRA_PALAVRA.includes((dados.produtos[pi]?.desc ?? "").trim().split(/\s+/)[0]?.toUpperCase());
+  const cxpDe = (pi: string) => dados.produtos[pi]?.cxp || dem.get(pi)?.cxp || undefined;
+  const scCaixas = (loc: string): number => {
+    let v = 0;
+    for (const [p, q] of scQtd.get(loc) ?? []) {
+      if (q <= 0) continue;
+      const c = cxpDe(p);
+      if (!c) return Infinity; // não dá para saber quantas caixas há na LOC: tratada como cheia
+      v += q / c;
+    }
+    return v;
+  };
   const limites = (pi: string): Limites | null => {
-    const cxp = dem.get(pi)?.cxp;
+    const cxp = cxpDe(pi);
     if (!cxp) return null;
     const cal = calcado(pi);
     const maxCx = params.caixasPorPi[pi] > 0 ? params.caixasPorPi[pi] : cal ? params.maxCaixasCalcado : params.maxCaixas;
@@ -110,7 +123,7 @@ export function montarContexto(dados: Dados, rm: RmDados | null, paramsEntrada: 
   };
   return {
     dados, rm, params, estoqueEm: dados.atualizadoEm ?? "", est: estoquePorPi(dados), dem, linhasSc, ocupFr, livreLoc, livrePorId, areasLoc, scQtd,
-    produtoDesc: (pi) => dados.produtos[pi]?.desc ?? pi, ehCalcado: calcado, limites,
+    produtoDesc: (pi) => dados.produtos[pi]?.desc ?? pi, cxpDe, scCaixas, ehCalcado: calcado, limites,
   };
 }
 
@@ -259,10 +272,9 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   const ocupSc = (k: string): number => {
     let v = scOcup.get(k);
     if (v === undefined) {
-      v = 0;
-      for (const [p, q] of ctx.scQtd.get(k) ?? []) { const c = ctx.dem.get(p)?.cxp; if (c) v += q / c; }
+      v = ctx.scCaixas(k);
       for (const m of efet) {
-        const c = ctx.dem.get(m.pi)?.cxp;
+        const c = ctx.cxpDe(m.pi);
         if (!c) continue;
         if (m.tipo === "recompletamento" && chaveLoc(m.de) === k) v -= m.qtd / c;
         else if (m.tipo === "movimentacao" && chaveLoc(m.para) === k && !ctx.areasLoc.get(k)?.has("FR")) v += m.qtd / c;
@@ -288,10 +300,12 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     const l = scNovasDoPi.get(m.pi) ?? scNovasDoPi.set(m.pi, []).get(m.pi)!;
     if (!l.includes(chaveLoc(m.para))) l.push(chaveLoc(m.para));
   }
+  const rotaCache = new Map<string, string>();
+  const rotaMemo = (k: string) => rotaCache.get(k) ?? rotaCache.set(k, chaveRota(k)).get(k)!;
   const ruaDeLoc = (k: string) => k.split("|")[1]?.split("-")[0] ?? "";
   const vaziasScLivres = (depOrigem = "", ruaOrigem = "") =>
     params.locsVaziasSc.map(chaveLoc).filter((x) => !ctx.areasLoc.has(x) && !scOcup.has(x) && !alvoEfetSc.has(x))
-      .sort((a, b) => Number(locDe(b).dep === depOrigem) - Number(locDe(a).dep === depOrigem) || Number(ruaDeLoc(b) === ruaOrigem) - Number(ruaDeLoc(a) === ruaOrigem) || (chaveRota(a) < chaveRota(b) ? -1 : 1));
+      .sort((a, b) => Number(locDe(b).dep === depOrigem) - Number(locDe(a).dep === depOrigem) || Number(ruaDeLoc(b) === ruaOrigem) - Number(ruaDeLoc(a) === ruaOrigem) || (rotaMemo(a) < rotaMemo(b) ? -1 : 1));
   /** Distribui `caixas` entre as LOCs SC do PI (mesmo paiol primeiro) e, se faltar espaço, LOCs SC vazias; respeita a capacidade. */
   const alocarSc = (pi: string, depOrigem: string, origemKey: string, caixas: number): { k: string; cx: number }[] => {
     const proprias = locsScDoPi(pi).sort((a, b) => Number(locDe(b).dep === depOrigem) - Number(locDe(a).dep === depOrigem));
@@ -310,7 +324,9 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     }
     return out;
   };
-  const podeDevolverSc = (pi: string) => !!ctx.dem.get(pi)?.cxp && (locsScDoPi(pi).some((k) => roomSc(pi, k) > 0) || (scNovasDoPi.get(pi) ?? []).some((k) => roomSc(pi, k) > 0) || vaziasScLivres().length > 0);
+  const locsScVazias = params.locsVaziasSc.map(chaveLoc);
+  const temVaziaSc = () => locsScVazias.some((x) => !ctx.areasLoc.has(x) && !scOcup.has(x) && !alvoEfetSc.has(x));
+  const podeDevolverSc = (pi: string) => !!ctx.cxpDe(pi) && (temVaziaSc() || locsScDoPi(pi).some((k) => roomSc(pi, k) > 0) || (scNovasDoPi.get(pi) ?? []).some((k) => roomSc(pi, k) > 0));
 
   // ---- 2) quem ainda não tem casa: LOC livre de menor custo; senão, zona de baixo giro
   const preferDep = (pi: string) => {
@@ -395,7 +411,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   const semCxp: string[] = [], soltas: string[] = [];
   /** FR → SC: SEMPRE em caixas fechadas (múltiplo da CXP). O que sobra solto (menos de 1 caixa) não volta. Devolve true se criou a missão. */
   const devolver = (pi: string, k: string, qtd: number, motivo: string, prioridade: 1 | 2 | 3): boolean => {
-    const cxp = ctx.dem.get(pi)?.cxp;
+    const cxp = ctx.cxpDe(pi);
     const loc = k.replace("|", " ");
     if (!cxp) { semCxp.push(`${nome(pi)} (${fmt(qtd)} un em ${loc})`); return false; }
     const disponivel = sim.get(k)?.get(pi)?.qtd ?? 0;
@@ -435,7 +451,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
       let q = Math.min(movivel, room);
       // o que não cabe na casa: caixas inteiras voltam ao SC; a sobra solta (menos de 1 caixa) vai junto para a casa
       const resto = movivel - q;
-      const cxp = ctx.dem.get(pi)?.cxp ?? 0;
+      const cxp = ctx.cxpDe(pi) ?? 0;
       if (resto > EPS && cxp) {
         const cx = Math.floor(resto / cxp + EPS);
         if (cx > 0) devolver(pi, k, cx * cxp, `Excedente além do máximo da LOC ${locDe(alvo).end}: devolver ${cx} caixa(s) ao SC`, 3);
@@ -656,10 +672,9 @@ export function verificarEstado(estado: EstadoMissoes, ctx: Contexto, agora: str
   const ocupAtual = (k: string) => {
     let v = ocup.get(k);
     if (v === undefined) {
-      v = 0;
-      for (const [p, q] of ctx.scQtd.get(k) ?? []) { const c = ctx.dem.get(p)?.cxp; if (c) v += q / c; }
+      v = ctx.scCaixas(k);
       for (const m of Object.values(estado.missoes)) {
-        const c = ctx.dem.get(m.pi)?.cxp;
+        const c = ctx.cxpDe(m.pi);
         if (c && EM_ANDAMENTO(m.status) && m.status !== "pendente" && m.tipo === "movimentacao" && chaveLoc(m.para) === k) v += m.qtd / c;
       }
       ocup.set(k, v);
@@ -670,11 +685,11 @@ export function verificarEstado(estado: EstadoMissoes, ctx: Contexto, agora: str
   const locsFr = new Set([...ctx.params.locsVazias.map(chaveLoc), ...Object.values(estado.casas ?? {}), ...Object.values(estado.zona ?? {})]);
   const destinoSc = (m: Missao) => !ctx.areasLoc.get(chaveLoc(m.para))?.has("FR") && !locsFr.has(chaveLoc(m.para));
   for (const m of Object.values(estado.missoes).filter((x) => x.origem === "auto" && x.status === "pendente" && x.tipo === "movimentacao" && destinoSc(x)).sort((a, b) => (a.id < b.id ? -1 : 1))) {
-    const c = ctx.dem.get(m.pi)?.cxp;
+    const c = ctx.cxpDe(m.pi);
     if (!c) continue;
     const k = chaveLoc(m.para), lim = ctx.ehCalcado(m.pi) ? ctx.params.maxCaixasScCalcado : ctx.params.maxCaixasSc, cx = m.qtd / c;
     if (ocupAtual(k) + cx > lim + EPS) {
-      m.status = "cancelada"; m.motivoCancelamento = `Automático: a LOC SC ${m.para.end} já tem ${Math.round(ocupAtual(k) * 10) / 10} caixa(s) e o limite é ${lim}.`; m.atualizadoEm = agora; mudou = true;
+      m.status = "cancelada"; m.motivoCancelamento = `Automático: a LOC SC ${m.para.end} ${Number.isFinite(ocupAtual(k)) ? `já tem ${Math.round(ocupAtual(k) * 10) / 10} caixa(s) e o limite é ${lim}` : `tem item sem caixa padrão (CXP) conhecida, então não dá para garantir o limite de ${lim} caixas`}.`; m.atualizadoEm = agora; mudou = true;
     } else ocup.set(k, ocupAtual(k) + cx);
   }
 
@@ -800,10 +815,10 @@ export function validarManual(e: EntradaManual, ctx: Contexto, missoes: Missao[]
     if (areasPara?.has("SC") && !areasPara.has("FR") && cxp && Math.abs(qtd / cxp - Math.round(qtd / cxp)) > 1e-6) aviso(`Devolução ao SC deve ser em caixas fechadas: ${fmt(qtd)} un não é múltiplo da caixa padrão (${fmt(cxp)}).`);
     if (areasPara?.has("SC") && !areasPara.has("FR") && cxp) {
       const k = chaveLoc(e.para);
-      let ocup = 0;
-      for (const [p, q] of ctx.scQtd.get(k) ?? []) { const c = ctx.dem.get(p)?.cxp; if (c) ocup += q / c; }
+      const ocup = ctx.scCaixas(k);
       const lim = ctx.ehCalcado(e.pi) ? ctx.params.maxCaixasScCalcado : ctx.params.maxCaixasSc;
-      if (ocup + qtd / cxp > lim + EPS) aviso(`A LOC SC ${e.para.end} ficaria com ${Math.round((ocup + qtd / cxp) * 10) / 10} caixa(s), acima do limite de ${lim}.`);
+      if (!Number.isFinite(ocup)) aviso(`A LOC SC ${e.para.end} tem item sem caixa padrão (CXP) conhecida: não dá para conferir o limite de ${lim} caixas.`);
+      else if (ocup + qtd / cxp > lim + EPS) aviso(`A LOC SC ${e.para.end} ficaria com ${Math.round((ocup + qtd / cxp) * 10) / 10} caixa(s), acima do limite de ${lim}.`);
     }
     if (areasPara?.has("SC") && !areasPara.has("FR") && !cxp) aviso("Caixa padrão (CXP) deste PI não conhecida: não dá para conferir se a devolução ao SC é em caixas fechadas.");
   }
