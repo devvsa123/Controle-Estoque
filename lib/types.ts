@@ -21,6 +21,7 @@ export interface Produto {
   desc: string;
   familia: string; // descrição sem o tamanho/variação
   variante: string; // tamanho ou variação (ex.: "44", "GG", "CB-MR")
+  cxp?: number; // caixa padrão (unidades por caixa), quando a planilha de estoque tem a coluna CXP
 }
 
 export interface Dados {

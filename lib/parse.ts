@@ -54,6 +54,9 @@ export function separarFamilia(descricao: string): { familia: string; variante: 
   return { familia: desc, variante: "" };
 }
 
+const COLUNAS_CXP = ["CXP", "CX_PADRAO", "CAIXA_PADRAO", "QTD_CAIXA", "QTD_POR_CAIXA", "QTD_CX", "QTDE_CAIXA", "QTD_PADRAO"];
+const normCol = (c: string) => c.trim().toUpperCase().replace(/[\s.-]+/g, "_");
+
 export function lerPlanilha(buf: Buffer | ArrayBuffer): { linhas: Linha[]; produtos: Record<string, Produto> } {
   const wb = XLSX.read(buf, { type: "buffer", cellDates: false });
   const ws = wb.Sheets[wb.SheetNames[0]];
@@ -63,6 +66,7 @@ export function lerPlanilha(buf: Buffer | ArrayBuffer): { linhas: Linha[]; produ
   const faltando = obrigatorias.filter((c) => !(c in rows[0]));
   if (faltando.length) throw new Error(`Colunas não encontradas na planilha: ${faltando.join(", ")}`);
 
+  const colCxp = Object.keys(rows[0]).find((c) => COLUNAS_CXP.includes(normCol(c)));
   const linhas: Linha[] = [];
   const produtos: Record<string, Produto> = {};
   for (const r of rows) {
@@ -73,6 +77,7 @@ export function lerPlanilha(buf: Buffer | ArrayBuffer): { linhas: Linha[]; produ
       const { familia, variante } = separarFamilia(desc);
       produtos[pi] = { desc, familia, variante };
     }
+    if (colCxp) { const c = num(r[colCxp]); if (c > 0 && !produtos[pi].cxp) produtos[pi].cxp = c; }
     const disp = num(r.DISPONIVEL);
     linhas.push({
       pi,
