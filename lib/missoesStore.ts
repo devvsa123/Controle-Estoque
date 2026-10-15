@@ -70,7 +70,7 @@ export interface RespostaMissoes {
 function cancelarPendentesAuto(e: EstadoMissoes, agora: string, motivo: string): number {
   let n = 0;
   for (const m of Object.values(e.missoes)) {
-    if (m.origem === "auto" && m.status === "pendente") { m.status = "cancelada"; m.motivoCancelamento = motivo; m.atualizadoEm = agora; n++; }
+    if (m.origem === "auto" && (m.status === "pendente" || m.status === "divergente")) { m.status = "cancelada"; m.motivoCancelamento = motivo; m.atualizadoEm = agora; n++; }
   }
   return n;
 }
@@ -90,6 +90,17 @@ function migrar(e: EstadoMissoes, agora: string): boolean {
   e.casas = {}; e.zona = {}; // a tabela mestre é refeita por paiol
   (e as { versao: number }).versao = 4;
   return true;
+}
+
+/** Botão "Zerar e refazer tudo": apaga TODAS as missões automáticas (qualquer status, inclusive histórico) e a tabela de LOCs por PI; as manuais ficam. */
+export async function zerarAutomaticas(): Promise<number> {
+  let n = 0;
+  await atualizarJson(ARQUIVO_MISSOES, vazio, (e) => {
+    for (const m of Object.values(e.missoes)) if (m.origem === "auto") { delete e.missoes[m.id]; n++; }
+    e.casas = {}; e.zona = {};
+    return true;
+  });
+  return n;
 }
 
 /** Botão "Refazer missões pendentes": cancela as automáticas pendentes e replaneja com a planilha atual. */
