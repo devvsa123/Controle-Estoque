@@ -455,12 +455,19 @@ function Lista({ tipo, missoes, geradoEm, estoqueEm, locs, params, abertas }: { 
           <button className="btn" onClick={() => imprimir(`${NOME_TIPO[tipo]} — folha de missões${paiol ? ` · ${paiol}` : ""}${rua ? ` · rua ${rua.padStart(2, "0")}` : ""}`, lista, estoqueEm, visao)} disabled={!lista.length} title="Abre a folha para imprimir, por onda e paiol, na ordem do caminho físico">🖨 Imprimir {fmtNum(lista.length)} missão(ões)</button>
           <button className="btn" onClick={exportar} disabled={!lista.length}>Exportar CSV</button>
           <button className="btn" disabled={carregando} title="Cancela as missões automáticas ainda pendentes e refaz o plano com a planilha atual (missões em execução, feitas e manuais não são mexidas)" onClick={async () => {
-            if (!window.confirm("Cancelar todas as missões automáticas ainda PENDENTES (desta e da outra aba) e refazer o plano com a planilha atual? Missões em execução, feitas e manuais não são alteradas.")) return;
+            if (!window.confirm("Cancelar todas as missões automáticas ainda PENDENTES ou DIVERGENTES (desta e da outra aba) e refazer o plano com a planilha atual? Missões em execução, feitas e manuais não são alteradas (para apagar tudo, use Zerar e refazer tudo).")) return;
             setErro(null);
             const r = await post({ acao: "refazer" });
             if (!r.ok) { setErro(r.json.erro || "Falha ao refazer"); return; }
             await recarregar();
           }}>♻ Refazer missões pendentes</button>
+          <button className="btn" disabled={carregando} title="Apaga TODAS as missões automáticas (qualquer status, inclusive divergentes e o histórico) e a tabela de LOCs por PI, e monta o plano do zero. As manuais ficam." onClick={async () => {
+            if (!window.confirm("ZERAR: apagar TODAS as missões automáticas (pendentes, em execução, feitas, divergentes e o histórico) e refazer o plano do zero com a planilha atual? As missões manuais não são apagadas.")) return;
+            setErro(null);
+            const r = await post({ acao: "zerar" });
+            if (!r.ok) { setErro(r.json.erro || "Falha ao zerar"); return; }
+            await recarregar();
+          }}>🗑 Zerar e refazer tudo</button>
           <button className="btn" onClick={recarregar} disabled={carregando}>{carregando ? "Atualizando…" : "Atualizar"}</button>
         </div>
         <div className="tablewrap">

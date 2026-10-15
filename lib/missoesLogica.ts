@@ -615,6 +615,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
 
 export interface Verificacao {
   estado: "concluida" | "parcial" | "pendente" | "divergente" | "obsoleta";
+  semChegada?: boolean; // divergente porque a origem sumiu e NADA apareceu no destino (item removido/migrado, não movimentado)
   restante?: number;
   nota: string;
 }
@@ -661,7 +662,7 @@ export function verificarMissoes(ms: Missao[], ctx: Contexto): Map<string, Verif
     for (const m of g.filter((x) => x.tipo === "movimentacao" && origDone.get(x.id))) {
       if (chegou >= m.qtd - tol) { out.set(m.id, { estado: "concluida", nota: "Confirmada pela planilha: saiu da origem e chegou ao destino." }); chegou -= m.qtd; }
       else if (chegou > tol) { out.set(m.id, { estado: "divergente", nota: `Saiu da origem, mas só ${fmt(chegou)} de ${fmt(m.qtd)} un apareceram no destino.` }); chegou = 0; }
-      else out.set(m.id, { estado: "divergente", nota: "Saiu da origem mas não apareceu no destino: confira o endereço ou se o item foi perdido." });
+      else out.set(m.id, { estado: "divergente", semChegada: true, nota: "Saiu da origem mas não apareceu no destino: confira o endereço ou se o item foi perdido." });
     }
     for (const m of g.filter((x) => x.tipo === "recompletamento" || (x.tipo === "movimentacao" && !origemComProva(x)))) {
       if (chegou >= m.qtd - tol) { out.set(m.id, { estado: "concluida", nota: m.tipo === "recompletamento" ? "Confirmada: o FR recebeu a quantidade (a paleta de SC pode ter sido outra)." : "Confirmada pela chegada ao destino." }); chegou -= m.qtd; }
@@ -690,12 +691,21 @@ export function verificarMissoes(ms: Missao[], ctx: Contexto): Map<string, Verif
 export function verificarEstado(estado: EstadoMissoes, ctx: Contexto, agora: string): boolean {
   let mudou = false;
 
+  // 0) PI que não existe mais na planilha de estoque (removido ou migrado para outro código): missão automática aberta perde o sentido
+  for (const m of Object.values(estado.missoes)) {
+    if (m.origem === "auto" && EM_ANDAMENTO(m.status) && !ctx.dados.produtos[m.pi]) {
+      m.status = "cancelada"; m.motivoCancelamento = "Automático: o PI não existe mais na planilha de estoque (removido ou migrado para outro código)."; m.atualizadoEm = agora; mudou = true;
+    }
+  }
+
   // 1) verificação: só das missões cuja "foto" é anterior à planilha atual
   const paraVerificar = Object.values(estado.missoes).filter((m) => EM_ANDAMENTO(m.status) && ctx.estoqueEm > (m.baseEm ?? ""));
   const res = verificarMissoes(paraVerificar, ctx);
   for (const m of paraVerificar) {
     const v = res.get(m.id)!;
     if (v.estado === "concluida") { m.status = "concluida"; m.verificadaEm = agora; m.concluidaEm = m.concluidaEm ?? agora; m.nota = v.nota; m.atualizadoEm = agora; mudou = true; continue; }
+    // automática que ninguém iniciou, cuja origem sumiu da planilha sem nada chegar ao destino: o item foi removido/migrado, não movimentado
+    if (v.estado === "divergente" && v.semChegada && m.origem === "auto" && m.status === "pendente") { m.status = "cancelada"; m.motivoCancelamento = "Automático: a origem sumiu da planilha e nada chegou ao destino (item removido ou migrado)."; m.atualizadoEm = agora; mudou = true; continue; }
     if (v.estado === "divergente") { m.status = "divergente"; m.nota = v.nota; m.atualizadoEm = agora; mudou = true; }
     else if (v.estado === "parcial") {
       m.qtd = Math.max(0, v.restante ?? m.qtd);
