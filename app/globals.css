@@ -105,3 +105,8 @@ code { background: var(--bg); padding: 1px 5px; border-radius: 4px; }
 .grid > * { min-width: 0; }
 [hidden] { display: none !important; }
 .seg { flex-wrap: wrap; }
+
+/* versão do deploy: discreta, canto inferior direito, fora da impressão */
+.versao { position: fixed; right: 8px; bottom: 4px; font-size: 10px; color: var(--muted); opacity: 0.55; pointer-events: auto; user-select: all; z-index: 5; }
+.versao:hover { opacity: 1; }
+@media print { .versao { display: none; } }
