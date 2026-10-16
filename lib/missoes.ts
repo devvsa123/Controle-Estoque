@@ -35,6 +35,8 @@ export interface Missao {
   origem: "auto" | "manual";
   status: StatusMissao;
   prioridade: 1 | 2 | 3; // 1 = alta
+  /** Movimentação dentro do SC: descer palete (alto → altura 02), desmisturar (1 PI por LOC) ou consolidar caixas. Sem valor: FR→FR, FR→SC ou recompletamento. */
+  sub?: "descer" | "desmisturar" | "consolidar";
   onda: number; // 1 pode ser feita já; 2, 3… só depois que as ondas anteriores liberarem o destino (auditoria confere a ordem)
   pi: string;
   desc: string;
@@ -95,7 +97,7 @@ export const PARAMS_PADRAO_MISSOES: Parametros = {
 };
 
 export interface EstadoMissoes {
-  versao: 4;
+  versao: 5;
   seq: { R: number; A: number };
   missoes: Record<string, Missao>;
   params: Parametros;

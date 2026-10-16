@@ -10,7 +10,7 @@ import {
   alertasDoEstado, chaveLoc, conformidade, criarMissoes, efetivas, montarContexto, planejar, validarManual, verificarEstado, type EntradaManual, type Plano,
 } from "./missoesLogica";
 
-const vazio = (): EstadoMissoes => ({ versao: 4, seq: { R: 0, A: 0 }, missoes: {}, params: { ...PARAMS_PADRAO_MISSOES }, casas: {}, zona: {} });
+const vazio = (): EstadoMissoes => ({ versao: 5, seq: { R: 0, A: 0 }, missoes: {}, params: { ...PARAMS_PADRAO_MISSOES }, casas: {}, zona: {} });
 const mesclar = (p: Partial<Parametros> | undefined): Parametros => ({ ...PARAMS_PADRAO_MISSOES, ...(p ?? {}) });
 
 /** Parâmetros usados no planejamento: as LOCs vazias da consulta do WMS somam-se às informadas à mão (nada disso é gravado nos parâmetros). */
@@ -78,7 +78,7 @@ function cancelarPendentesAuto(e: EstadoMissoes, agora: string, motivo: string):
 /** Migra versões antigas: v1 (lógica por média de dias) e v2 (antes dos limites de caixas no SC e das LOCs vazias do WMS). */
 function migrar(e: EstadoMissoes, agora: string): boolean {
   const v = (e as { versao: number }).versao;
-  if (v === 4) return false;
+  if (v === 5) return false;
   if (v < 2) {
     for (const m of Object.values(e.missoes)) {
       if (m.origem === "auto" && m.status === "em_execucao") { m.status = "cancelada"; m.motivoCancelamento = "Substituída pela nova lógica de endereçamento (mín./máx. de caixas por LOC)"; m.atualizadoEm = agora; }
@@ -86,9 +86,9 @@ function migrar(e: EstadoMissoes, agora: string): boolean {
     }
     e.params = mesclar(undefined);
   }
-  cancelarPendentesAuto(e, agora, "Refeita: movimentações agora ficam dentro do paiol (paiol de maior saldo do PI) e faltou LOC passa a ser 2 PIs por LOC");
+  cancelarPendentesAuto(e, agora, "Refeita: o SC passa a ter 1 PI por LOC, altura 02 como reposição e paletes fechados nas alturas 03+");
   e.casas = {}; e.zona = {}; // a tabela mestre é refeita por paiol
-  (e as { versao: number }).versao = 4;
+  (e as { versao: number }).versao = 5;
   return true;
 }
 
@@ -160,7 +160,7 @@ export async function sincronizarEListar(): Promise<RespostaMissoes> {
   }
   alertas.push(...alertasDoEstado(ctx, lista, conf, agora));
   // auditoria independente de tudo o que está aberto: prova de que as missões respeitam os limites e parâmetros
-  const aud = auditar(ctx, lista.filter((m) => EM_ANDAMENTO(m.status)), new Set(Object.values(estado.zona ?? {})));
+  const aud = auditar(ctx, lista.filter((m) => EM_ANDAMENTO(m.status)), new Set(Object.values(estado.zona ?? {})), new Set([...Object.values(estado.casas ?? {}), ...Object.values(estado.zona ?? {})]));
   if (aud.violacoes.length)
     alertas.push({ id: "auditoria", nivel: "critico", regra: "Missões respeitam limites e parâmetros", titulo: `Auditoria: ${aud.violacoes.length} violação(ões) em missões abertas`, detalhe: "Missões abertas que ferem caixa fechada, máximo de caixas, 1 PI por LOC, paiol ou saldo de origem. As automáticas pendentes são canceladas e refeitas na próxima atualização.", total: aud.violacoes.length, exemplos: aud.violacoes.slice(0, 8).map((v) => `${v.id} · ${v.regra}: ${v.detalhe}`) });
   const peso = { critico: 0, atencao: 1, info: 2 } as const;

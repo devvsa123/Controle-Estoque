@@ -71,5 +71,8 @@ export const ARQUIVO_MISSOES = "controle-missoes.json";
 /** Calçados: caixas grandes, então o máximo por LOC no fracionado é menor. Identificados pela 1ª palavra da descrição (BOTAO não é calçado). */
 export const CALCADOS_PRIMEIRA_PALAVRA = ["SAPATO", "COTURNO", "BOTA", "TENIS", "MOCASSIM", "SANDALIA", "CHINELO", "BOTINA"];
 
+/** Altura (3º número do endereço) das LOCs de SC que abastecem o FR: caixas fechadas soltas de um PI. Alturas acima (03, 04, 05) guardam palete fechado. */
+export const NIVEL_SC_REPOSICAO = 2;
+
 /** Zona de baixo giro: quando faltam LOCs, os PIs de menor saída ficam aqui com poucas caixas (vários PIs por LOC). */
 export const ZONA_BAIXO_GIRO = { dep: "P02", rua: 1 };

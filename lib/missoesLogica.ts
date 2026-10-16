@@ -1,4 +1,4 @@
-import { CALCADOS_PRIMEIRA_PALAVRA, DEPOSITOS_FORA_REPOSICAO, ZONA_BAIXO_GIRO } from "./config";
+import { CALCADOS_PRIMEIRA_PALAVRA, DEPOSITOS_FORA_REPOSICAO, NIVEL_SC_REPOSICAO, ZONA_BAIXO_GIRO } from "./config";
 import { demandaFracionada, type DemandaFr } from "./demandaFr";
 import { montarLayout, ruaDe, ruaForaDoLayout } from "./layoutFr";
 import { chaveRota } from "./rota";
@@ -289,68 +289,93 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     if (cand.length) { casaLoc.set(cand[0], pi); casaDe.set(pi, cand[0]); }
   }
 
-  // destino SC para devolver excedentes: cada LOC de SC tem capacidade em caixas (params.maxCaixasSc / maxCaixasScCalcado)
+  // ---- SC: estado simulado (planilha + missões em andamento), 1 PI por LOC ao final, altura 02 = reposição, alturas 03+ = palete fechado
   const maxSc = (pi: string) => (ctx.ehCalcado(pi) ? params.maxCaixasScCalcado : params.maxCaixasSc);
-  const scOcup = new Map<string, number>(); // LOC SC → caixas já ocupadas (planilha + missões em andamento + esta rodada)
-  const ocupSc = (k: string): number => {
-    let v = scOcup.get(k);
-    if (v === undefined) {
-      v = ctx.scCaixas(k);
-      for (const m of efet) {
-        const c = ctx.cxpDe(m.pi);
-        if (!c) continue;
-        if (m.tipo === "recompletamento" && chaveLoc(m.de) === k) v -= m.qtd / c;
-        else if (m.tipo === "movimentacao" && chaveLoc(m.para) === k && !ctx.areasLoc.get(k)?.has("FR")) v += m.qtd / c;
-      }
-      v = Math.max(0, v);
-      scOcup.set(k, v);
-    }
+  const nivelDe = (k: string) => Number(k.split("|")[1]?.split("-")[2]) || 0;
+  interface ItSc { qtd: number; livre: number } // qtd = total (todos os status); livre = o que dá para movimentar
+  const scSim = new Map<string, Map<string, ItSc>>();
+  const linhaSc = new Map<string, Linha>(); // ID_QUANT → linha livre de SC
+  const locDaLinha = new Map<string, string>(); // ID_QUANT → LOC atual (muda com missões de descer/consolidar)
+  for (const l of ctx.dados.linhas) {
+    if (l.area !== "SC" || !depsSim.has(l.dep) || ctx.dados.escopos[l.dep] !== "estoque" || !(l.total > 0 || l.disp > 0)) continue;
+    const k = l.dep + "|" + l.end;
+    const mp = scSim.get(k) ?? scSim.set(k, new Map()).get(k)!;
+    const it = mp.get(l.pi) ?? mp.set(l.pi, { qtd: 0, livre: 0 }).get(l.pi)!;
+    it.qtd += l.total; if (l.livre) it.livre += l.disp;
+    if (l.livre && l.disp > 0) { linhaSc.set(l.id, l); locDaLinha.set(l.id, k); }
+  }
+  let versaoSc = 0; // muda a cada alteração do estado simulado do SC (invalida os caches abaixo)
+  const scAdd = (k: string, pi: string, q: number) => {
+    versaoSc++;
+    const mp = scSim.get(k) ?? scSim.set(k, new Map()).get(k)!;
+    const it = mp.get(pi) ?? mp.set(pi, { qtd: 0, livre: 0 }).get(pi)!;
+    it.qtd += q; it.livre += q;
+  };
+  const scSub = (k: string, pi: string, q: number) => {
+    versaoSc++;
+    const it = scSim.get(k)?.get(pi);
+    if (!it) return;
+    it.qtd -= q; it.livre -= q;
+    if (it.qtd <= EPS) scSim.get(k)!.delete(pi);
+    if (scSim.get(k)!.size === 0) scSim.delete(k);
+  };
+  const ehLocFr = (k: string) => !!ctx.areasLoc.get(k)?.has("FR") || params.locsVazias.some((v) => chaveLoc(v) === k) || Object.values(casasPrev).includes(k) || Object.values(zonaPrev).includes(k);
+  // missões em andamento já valem: mexem no estado simulado do SC
+  for (const m of efet) {
+    const de = chaveLoc(m.de), para = chaveLoc(m.para);
+    if (m.tipo === "recompletamento") { scSub(de, m.pi, m.qtd); continue; }
+    if (m.sub) {
+      scSub(de, m.pi, m.qtd); scAdd(para, m.pi, m.qtd);
+      for (const [id, k] of locDaLinha) { const l = linhaSc.get(id); if (l && l.pi === m.pi && k === de && (!m.idQuant || m.idQuant === id)) locDaLinha.set(id, para); }
+    } else if (!ehLocFr(para)) scAdd(para, m.pi, m.qtd); // FR → SC (devolução)
+  }
+  const scPis = (k: string) => [...(scSim.get(k) ?? [])].filter(([, it]) => it.qtd > EPS).map(([pi]) => pi);
+  const scBoxes = (k: string): number => {
+    let v = 0;
+    for (const [pi, it] of scSim.get(k) ?? []) { if (it.qtd <= EPS) continue; const c = ctx.cxpDe(pi); if (!c) return Infinity; v += it.qtd / c; }
     return v;
   };
-  const roomSc = (pi: string, k: string) => Math.floor(maxSc(pi) - ocupSc(k) + EPS);
-  const locsScDoPi = (pi: string) => {
-    const m = new Map<string, number>();
-    for (const l of ctx.linhasSc.get(pi) ?? []) m.set(l.dep + "|" + l.end, (m.get(l.dep + "|" + l.end) ?? 0) + l.disp);
-    return [...m.entries()].sort((a, b) => b[1] - a[1] || (a[0] < b[0] ? -1 : 1)).map(([k]) => k);
-  };
-  const ocupadasSc = new Set<string>();
-  for (const [k, ar] of ctx.areasLoc) if (ar.has("SC")) ocupadasSc.add(k);
-  // LOCs SC já escolhidas para um PI (missões em andamento ou esta rodada): ele continua enchendo a mesma, em vez de abrir outra vazia
-  const alvoEfetSc = new Set<string>();
-  const scNovasDoPi = new Map<string, string[]>();
-  for (const m of efet) if (m.tipo === "movimentacao" && !ctx.areasLoc.get(chaveLoc(m.para))?.has("FR") && !ocupadasSc.has(chaveLoc(m.para)) && params.locsVaziasSc.some((v) => chaveLoc(v) === chaveLoc(m.para))) {
-    alvoEfetSc.add(chaveLoc(m.para));
-    const l = scNovasDoPi.get(m.pi) ?? scNovasDoPi.set(m.pi, []).get(m.pi)!;
-    if (!l.includes(chaveLoc(m.para))) l.push(chaveLoc(m.para));
-  }
+  const roomSc = (pi: string, k: string) => Math.floor(maxSc(pi) - scBoxes(k) + EPS);
   const rotaCache = new Map<string, string>();
   const rotaMemo = (k: string) => rotaCache.get(k) ?? rotaCache.set(k, chaveRota(k)).get(k)!;
   const ruaDeLoc = (k: string) => k.split("|")[1]?.split("-")[0] ?? "";
-  const vaziasScLivres = (depOrigem = "", ruaOrigem = "") =>
-    params.locsVaziasSc.map(chaveLoc).filter((x) => !ctx.areasLoc.has(x) && !scOcup.has(x) && !alvoEfetSc.has(x))
-      .sort((a, b) => Number(locDe(b).dep === depOrigem) - Number(locDe(a).dep === depOrigem) || Number(ruaDeLoc(b) === ruaOrigem) - Number(ruaDeLoc(a) === ruaOrigem) || (rotaMemo(a) < rotaMemo(b) ? -1 : 1));
-  /** Distribui `caixas` entre as LOCs SC do PI (mesmo paiol primeiro) e, se faltar espaço, LOCs SC vazias; respeita a capacidade. */
+  const locsScVazias = params.locsVaziasSc.map(chaveLoc);
+  /** LOCs de SC vazias do paiol (de uma altura, se informada), as da mesma rua primeiro. Uma LOC já usada neste plano deixa de estar vazia. */
+  const vaziasSc = (dep: string, nivel?: number, rua = "") =>
+    locsScVazias.filter((k) => locDe(k).dep === dep && !ctx.areasLoc.has(k) && scPis(k).length === 0 && (nivel === undefined || nivelDe(k) === nivel))
+      .sort((a, b) => Number(ruaDeLoc(b) === rua) - Number(ruaDeLoc(a) === rua) || (rotaMemo(a) < rotaMemo(b) ? -1 : 1));
+  /** LOCs de reposição (altura 02) do paiol que só têm este PI: onde as caixas devolvidas do FR se juntam. */
+  const pulmoesDoPi = (pi: string, dep: string) =>
+    [...scSim.keys()].filter((k) => locDe(k).dep === dep && nivelDe(k) === NIVEL_SC_REPOSICAO && scPis(k).length > 0 && scPis(k).every((p) => p === pi))
+      .sort((a, b) => scBoxes(b) - scBoxes(a) || (a < b ? -1 : 1));
+  const temVaziaSc = (dep: string) => locsScVazias.some((k) => locDe(k).dep === dep && nivelDe(k) === NIVEL_SC_REPOSICAO && !ctx.areasLoc.has(k) && scPis(k).length === 0);
+  /** Distribui `caixas` devolvidas entre as LOCs de altura 02 do PI (uma só dele) e, se faltar espaço, LOCs vazias de altura 02 do mesmo paiol. */
   const alocarSc = (pi: string, depOrigem: string, origemKey: string, caixas: number): { k: string; cx: number }[] => {
-    // só LOCs SC do mesmo paiol da origem: o que está no P05 fica no P05
-    const proprias = locsScDoPi(pi).filter((k) => locDe(k).dep === depOrigem);
-    const ruaOrigem = ruaDeLoc(origemKey);
-    const cands = [...new Set([...proprias, ...(scNovasDoPi.get(pi) ?? []).filter((k) => locDe(k).dep === depOrigem), ...vaziasScLivres(depOrigem, ruaOrigem).filter((k) => locDe(k).dep === depOrigem)])];
+    const cands = [...pulmoesDoPi(pi, depOrigem), ...vaziasSc(depOrigem, NIVEL_SC_REPOSICAO, ruaDeLoc(origemKey))];
     const out: { k: string; cx: number }[] = [];
     let falta = caixas;
+    const c = ctx.cxpDe(pi);
     for (const k of cands) {
-      if (falta <= 0) break;
+      if (falta <= 0 || !c) break;
       const cx = Math.min(falta, roomSc(pi, k));
       if (cx <= 0) continue;
       out.push({ k, cx });
-      scOcup.set(k, ocupSc(k) + cx);
-      if (!ocupadasSc.has(k)) { const l = scNovasDoPi.get(pi) ?? scNovasDoPi.set(pi, []).get(pi)!; if (!l.includes(k)) l.push(k); }
+      scAdd(k, pi, cx * c);
       falta -= cx;
     }
     return out;
   };
-  const locsScVazias = params.locsVaziasSc.map(chaveLoc);
-  const temVaziaSc = (dep: string) => locsScVazias.some((x) => locDe(x).dep === dep && !ctx.areasLoc.has(x) && !scOcup.has(x) && !alvoEfetSc.has(x));
-  const podeDevolverSc = (pi: string, dep: string) => !!ctx.cxpDe(pi) && (temVaziaSc(dep) || locsScDoPi(pi).some((k) => locDe(k).dep === dep && roomSc(pi, k) > 0) || (scNovasDoPi.get(pi) ?? []).some((k) => locDe(k).dep === dep && roomSc(pi, k) > 0));
+  const cachePode = new Map<string, boolean>();
+  const podeDevolverSc = (pi: string, dep: string) => {
+    const ck = `${pi}|${dep}|${versaoSc}`;
+    let v = cachePode.get(ck);
+    if (v === undefined) {
+      if (cachePode.size > 20000) cachePode.clear();
+      v = !!ctx.cxpDe(pi) && (pulmoesDoPi(pi, dep).some((k) => roomSc(pi, k) > 0) || temVaziaSc(dep));
+      cachePode.set(ck, v);
+    }
+    return v;
+  };
 
   // ---- 2) quem ainda não tem casa: LOC livre de menor custo; senão, zona de baixo giro
   const evictavel = (k: string) => {
@@ -428,7 +453,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   const baseDe = (pi: string, k: string) => ctx.livreLoc.get(`${pi}|${k}`) ?? 0;
   const novaProposta = (tipo: TipoMissao, pi: string, de: Local, para: Local, qtd: number, prioridade: 1 | 2 | 3, motivo: string, extra: Partial<Proposta> = {}): Proposta => ({
     tipo, prioridade, onda: 1, pi, desc: ctx.produtoDesc(pi), qtd, caixas: extra.caixas ?? null, de, para, lote: extra.lote ?? "", validade: extra.validade ?? "",
-    idQuant: extra.idQuant ?? "", motivo, chave: extra.chave ?? "", baseOrigem: baseDe(pi, chaveLoc(de)), baseDestino: baseDe(pi, chaveLoc(para)),
+    idQuant: extra.idQuant ?? "", sub: extra.sub, motivo, chave: extra.chave ?? "", baseOrigem: baseDe(pi, chaveLoc(de)), baseDestino: baseDe(pi, chaveLoc(para)),
     baseEm: ctx.estoqueEm, nota: "", freq: ctx.dem.get(pi)?.freqTexto ?? "", qtdMediaPedido: Math.round((ctx.dem.get(pi)?.qtdMediaPedido ?? 0) * 10) / 10,
   });
   const limFr = (pi: string, k: string): number => {
@@ -438,6 +463,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   };
 
   const semCxp: string[] = [], soltas: string[] = [];
+  const falhasSc: { pi: string; k: string; caixas: number; motivo: string; prioridade: 1 | 2 | 3; total: number }[] = []; // devoluções sem LOC de altura 02 com espaço (tentamos consolidar e de novo)
   /** FR → SC: SEMPRE em caixas fechadas (múltiplo da CXP). O que sobra solto (menos de 1 caixa) não volta. Devolve true se criou a missão. */
   const devolver = (pi: string, k: string, qtd: number, motivo: string, prioridade: 1 | 2 | 3): boolean => {
     const cxp = ctx.cxpDe(pi);
@@ -448,13 +474,63 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     if (caixas <= 0) { soltas.push(`${nome(pi)} (${fmt(Math.min(qtd, disponivel))} un soltas, menos de 1 caixa de ${fmt(cxp)}, em ${loc})`); return false; }
     const alocs = alocarSc(pi, locDe(k).dep, k, caixas);
     const alocadas = alocs.reduce((t, x) => t + x.cx, 0);
-    if (alocadas < caixas) semDestinoSc.push(`${nome(pi)} (${caixas - alocadas} de ${caixas} caixa(s) em ${loc}: LOCs SC cheias — máx. ${maxSc(pi)} cx)`);
+    if (alocadas < caixas) falhasSc.push({ pi, k, caixas: caixas - alocadas, motivo, prioridade, total: caixas });
     for (const { k: sc, cx } of alocs) {
       const q = cx * cxp;
       propostas.push(novaProposta("movimentacao", pi, locDe(k), locDe(sc), q, prioridade, motivo + (alocs.length > 1 ? ` (parte: ${cx} cx para ${locDe(sc).end}, LOC SC com limite de ${maxSc(pi)} cx)` : ""), { chave: `A|${pi}|${k}|SC:${sc}`, caixas: cx }));
       sairSim(sim, k, pi, q);
     }
     return alocs.length > 0;
+  };
+
+  // ---- 3a) SC: 1 PI por LOC ao final (mistura só provisória), altura 02 = reposição, alturas 03+ = palete fechado. As LOCs vazias são o coringa.
+  const semSolucaoSc: string[] = [];
+  const depsOrd = [...depsSim].sort();
+  const moverSc = (sub: "descer" | "desmisturar" | "consolidar", pi: string, de: string, para: string, qtd: number, motivo: string, prioridade: 1 | 2 | 3, idQuant = "") => {
+    const cxp = ctx.cxpDe(pi);
+    propostas.push(novaProposta("movimentacao", pi, locDe(de), locDe(para), qtd, prioridade, motivo, { chave: `S|${sub}|${pi}|${de}|${para}|${idQuant}`, caixas: cxp ? Math.round((qtd / cxp) * 100) / 100 : undefined, sub, idQuant }));
+    scSub(de, pi, qtd); scAdd(para, pi, qtd);
+    for (const [id, kk] of locDaLinha) { const l = linhaSc.get(id); if (l && l.pi === pi && kk === de && (!idQuant || idQuant === id)) locDaLinha.set(id, para); }
+  };
+  // desmisturar: fica o PI de maior saldo; os outros vão para LOC vazia (ou, se for caixa de reposição, para a LOC de reposição do próprio PI)
+  for (const dep of depsOrd) {
+    const mistas = [...scSim.keys()].filter((k) => locDe(k).dep === dep && scPis(k).length >= 2).sort((a, b) => (rotaMemo(a) < rotaMemo(b) ? -1 : 1));
+    for (const k of mistas) {
+      const pis = scPis(k).sort((a, b) => scSim.get(k)!.get(b)!.qtd - scSim.get(k)!.get(a)!.qtd || (a < b ? -1 : 1));
+      for (const pi of pis.slice(1)) {
+        const it = scSim.get(k)?.get(pi);
+        if (!it || it.livre <= EPS && it.qtd <= EPS) continue;
+        if (it.qtd - it.livre > EPS) { semSolucaoSc.push(`${nome(pi)} em ${k.replace("|", " ")}: saldo bloqueado impede tirar o PI da LOC de SC com mais de um PI`); continue; }
+        const nv = nivelDe(k), rua = ruaDeLoc(k), cxp = ctx.cxpDe(pi);
+        let dest: string | undefined;
+        if (nv === NIVEL_SC_REPOSICAO) dest = pulmoesDoPi(pi, dep).find((x) => x !== k && !!cxp && roomSc(pi, x) >= Math.ceil(it.qtd / cxp - EPS)) ?? vaziasSc(dep, NIVEL_SC_REPOSICAO, rua)[0];
+        else dest = vaziasSc(dep, nv, rua)[0] ?? vaziasSc(dep, undefined, rua).find((x) => nivelDe(x) > NIVEL_SC_REPOSICAO) ?? vaziasSc(dep, NIVEL_SC_REPOSICAO, rua)[0];
+        if (!dest) { semSolucaoSc.push(`${nome(pi)} em ${k.replace("|", " ")}: sem LOC de SC vazia no ${dep} para tirar o PI da LOC com mais de um PI`); continue; }
+        moverSc("desmisturar", pi, k, dest, it.livre, `Desmisturar o SC: a LOC ${locDe(k).end} tem mais de um PI (1 PI por LOC); levar este PI para ${locDe(dest).end}`, 3);
+      }
+    }
+  }
+  // consolidar as caixas de reposição (altura 02) de um mesmo PI quando cabem numa LOC só: libera LOC vazia
+  const consolidarSc = (deps: Iterable<string>) => {
+    for (const dep of deps) {
+      const porPi = new Map<string, string[]>();
+      for (const k of scSim.keys()) {
+        if (locDe(k).dep !== dep || nivelDe(k) !== NIVEL_SC_REPOSICAO) continue;
+        const pis = scPis(k);
+        if (pis.length === 1) (porPi.get(pis[0]) ?? porPi.set(pis[0], []).get(pis[0])!).push(k);
+      }
+      for (const [pi, ks] of [...porPi.entries()].sort((a, b) => (a[0] < b[0] ? -1 : 1))) {
+        if (ks.length < 2 || !ctx.cxpDe(pi)) continue;
+        const ordem = ks.sort((a, b) => scBoxes(a) - scBoxes(b) || (a < b ? -1 : 1));
+        for (const k of ordem) {
+          const it = scSim.get(k)?.get(pi);
+          if (!it || it.qtd - it.livre > EPS) continue;
+          const caixas = scBoxes(k);
+          const alvo = ordem.filter((x) => x !== k && scPis(x).length === 1 && scPis(x)[0] === pi).sort((a, b) => scBoxes(b) - scBoxes(a) || (a < b ? -1 : 1)).find((x) => roomSc(pi, x) >= Math.ceil(caixas - EPS));
+          if (alvo) moverSc("consolidar", pi, k, alvo, it.livre, `Consolidar o SC: juntar as ${fmt(caixas)} cx do PI da LOC ${locDe(k).end} na ${locDe(alvo).end} (libera uma LOC)`, 3);
+        }
+      }
+    }
   };
 
   for (const k of todasLocs()) {
@@ -517,6 +593,14 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     }
   }
 
+  // devolução sem LOC de altura 02 com espaço: consolidar as caixas de reposição do paiol para abrir espaço e tentar de novo
+  if (falhasSc.length) {
+    const lista = falhasSc.splice(0);
+    consolidarSc(new Set(lista.map((f) => locDe(f.k).dep)));
+    for (const f of lista) { const cxp = ctx.cxpDe(f.pi); if (cxp) devolver(f.pi, f.k, f.caixas * cxp, f.motivo, f.prioridade); }
+  }
+  for (const f of falhasSc) semDestinoSc.push(`${nome(f.pi)} (${f.caixas} de ${f.total} caixa(s) em ${f.k.replace("|", " ")}: sem LOC de SC de altura 02 com espaço — máx. ${maxSc(f.pi)} cx)`);
+
   // ---- 4) recompletamento: casa/zona abaixo do mínimo recebe caixas fechadas de SC
   const semOrigem: string[] = [], parcial: string[] = [];
   for (const pi of ativos) {
@@ -532,21 +616,33 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     let precisa = alvoCx - atualCx;
     if (precisa <= 0) continue;
     const depAlvo = locDe(alvo).dep;
-    const fontes = (ctx.linhasSc.get(pi) ?? [])
-      .map((l) => ({ l, livre: l.disp - (pendSc.get(l.id) ?? 0) }))
-      .filter((x) => x.livre >= lim.cxp - EPS)
-      .sort((a, b) => Number(b.l.dep === depAlvo) - Number(a.l.dep === depAlvo) || (a.l.val || "9999").localeCompare(b.l.val || "9999") || a.livre - b.livre || (a.l.id < b.l.id ? -1 : 1));
+    interface Fonte { l: Linha; livre: number; k: string }
+    const todas: Fonte[] = (ctx.linhasSc.get(pi) ?? [])
+      .map((l) => ({ l, livre: l.disp - (pendSc.get(l.id) ?? 0), k: locDaLinha.get(l.id) ?? l.dep + "|" + l.end }))
+      .filter((x) => x.livre >= lim.cxp - EPS);
+    const ordem = (a: Fonte, b: Fonte) => Number(locDe(b.k).dep === depAlvo) - Number(locDe(a.k).dep === depAlvo) || (a.l.val || "9999").localeCompare(b.l.val || "9999") || a.livre - b.livre || (a.l.id < b.l.id ? -1 : 1);
+    const baixas = todas.filter((x) => nivelDe(x.k) <= NIVEL_SC_REPOSICAO).sort(ordem); // LOC de reposição (altura 02): de onde se tira para o FR
+    const altas = todas.filter((x) => nivelDe(x.k) > NIVEL_SC_REPOSICAO).sort(ordem); // palete fechado (03+): só desce inteiro quando a altura 02 acaba
     const inicial = precisa;
-    for (const f of fontes) {
-      if (precisa <= 0) break;
+    const pegar = (f: Fonte, de: string) => {
       const take = Math.min(Math.floor(f.livre / lim.cxp + EPS), precisa);
-      if (take <= 0) continue;
-      propostas.push(novaProposta("recompletamento", pi, { dep: f.l.dep, end: f.l.end }, locDe(alvo), take * lim.cxp, cur <= EPS ? 1 : 2,
+      if (take <= 0) return;
+      propostas.push(novaProposta("recompletamento", pi, locDe(de), locDe(alvo), take * lim.cxp, cur <= EPS ? 1 : 2,
         `FR com ${fmt(cur)} un (mínimo ${lim.minCx} caixa(s) de ${fmt(lim.cxp)}); repor até ${alvoCx} caixa(s) = ${params.pedidosCobertura} pedido(s) fracionado(s) médio(s) de ${fmt(d.qtdMediaPedido)} un`,
         { caixas: take, lote: f.l.lote, validade: f.l.val, idQuant: f.l.id, chave: `R|${pi}|${f.l.id}|${alvo}` }));
       pendSc.set(f.l.id, (pendSc.get(f.l.id) ?? 0) + take * lim.cxp);
+      scSub(de, pi, take * lim.cxp);
       entrarSim(sim, alvo, pi, take * lim.cxp);
       precisa -= take;
+    };
+    for (const f of baixas) { if (precisa <= 0) break; pegar(f, f.k); }
+    for (const f of altas) {
+      if (precisa <= 0) break;
+      // acabou a altura 02: desce o palete inteiro (a LOC de altura 02 vazia do paiol, a mais próxima) e repõe dela; sem LOC vazia, repõe direto do palete
+      const inteira = f.livre >= f.l.disp - EPS && (pendSc.get(f.l.id) ?? 0) === 0;
+      const dest = locDe(f.k).dep === depAlvo && inteira ? vaziasSc(depAlvo, NIVEL_SC_REPOSICAO, ruaDeLoc(f.k))[0] : undefined;
+      if (dest) { moverSc("descer", pi, f.k, dest, f.l.disp, `Descer o palete da altura ${String(nivelDe(f.k)).padStart(2, "0")} para a altura 02 (${locDe(dest).end}): a reposição do FR acabou a LOC de altura 02`, 2, f.l.id); pegar(f, dest); }
+      else pegar(f, f.k);
     }
     if (precisa > 0) {
       const e = ctx.est.get(pi);
@@ -568,7 +664,8 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
     if (troca) { p.nota = troca.nota = "Troca entre duas LOCs: executar as duas missões juntas"; }
   }
   const comoMissoes = (lista: Proposta[]): Missao[] => lista.map((p, i) => ({ ...p, id: `~${String(i).padStart(5, "0")}`, origem: "auto", status: "pendente", responsavel: "", obs: "", criadaEm: "", atualizadoEm: "", concluidaEm: null, verificadaEm: null, motivoCancelamento: "" }) as Missao);
-  const auditarLista = (lista: Proposta[]) => auditar(ctx, [...efet, ...comoMissoes(lista)], compart);
+  const locsFrPlano = new Set([...casaDe.values(), ...zonaDe.values(), ...sim.keys()]);
+  const auditarLista = (lista: Proposta[]) => auditar(ctx, [...efet, ...comoMissoes(lista)], compart, locsFrPlano);
   const bumpaveis = new Set(["FR-LIMITE", "FR-1PI", "ORIGEM"]);
   for (let volta = 0; volta < 8; volta++) {
     const ruins = new Set(auditarLista(propostas).violacoes.filter((v) => v.id.startsWith("~") && bumpaveis.has(v.regra)).map((v) => v.id));
@@ -598,6 +695,7 @@ export function planejar(ctx: Contexto, efet: Missao[], casasPrev: Record<string
   mk("mv-sem-cxp", "atencao", "FR → SC em caixas fechadas", "Sem caixa padrão (CXP) para devolver ao SC", "A devolução ao SC só é feita em caixas fechadas, e este PI não tem CXP conhecida (nenhum pedido na planilha de pedidos).", semCxp, "movimentacao");
   mk("mv-soltas", "info", "FR → SC em caixas fechadas", "Sobra solta (menos de 1 caixa) não volta ao SC", "Só caixas fechadas voltam ao SC; unidades soltas menores que 1 caixa permanecem na LOC.", soltas, "movimentacao");
   mk("mv-bloqueio", "atencao", "1 PI por LOC", "Saldo bloqueado impede esvaziar a LOC", "O PI tem saldo bloqueado nesta LOC: resolva o bloqueio antes de movimentar.", bloqueios, "movimentacao");
+  mk("sc-sem-solucao", "atencao", "SC: 1 PI por LOC", "LOC de SC com mais de um PI sem como desmisturar", "Falta LOC de SC vazia no paiol (ou há saldo bloqueado) para tirar o PI extra. A mistura só vale como provisória.", semSolucaoSc, "movimentacao");
   mk("auditoria-descartada", "atencao", "Auditoria do plano", "Missão reprovada pela auditoria e descartada", "A missão feriria um limite (caixas fechadas, máximo de caixas no SC ou no FR, 1 PI por LOC, origem sem saldo ou outro paiol) em qualquer ordem e não foi criada. Normalmente falta LOC vazia no paiol.", descartadas, "movimentacao");
   mk("mv-sem-lugar", "critico", "Todo PI fracionado precisa de uma LOC",
     `Faltou LOC no paiol, mesmo com 2 PIs por LOC: ${semLugar.length} PI(s) sem lugar`,
@@ -723,38 +821,11 @@ export function verificarEstado(estado: EstadoMissoes, ctx: Contexto, agora: str
     mudou = true;
   }
 
-  // 2) capacidade das LOCs de SC: missão automática ainda pendente que levaria o SC além do máximo (ex.: criada antes do limite existir
-  //    ou com a LOC SC enchendo desde então) é cancelada; o planejamento seguinte busca outra LOC SC com espaço.
-  const ocup = new Map<string, number>();
-  const ocupAtual = (k: string) => {
-    let v = ocup.get(k);
-    if (v === undefined) {
-      v = ctx.scCaixas(k);
-      for (const m of Object.values(estado.missoes)) {
-        const c = ctx.cxpDe(m.pi);
-        if (c && EM_ANDAMENTO(m.status) && m.status !== "pendente" && m.tipo === "movimentacao" && chaveLoc(m.para) === k) v += m.qtd / c;
-      }
-      ocup.set(k, v);
-    }
-    return v;
-  };
-  // destino SC = não é FR (nem LOC FR vazia, nem casa/zona conhecida de algum PI)
-  const locsFr = new Set([...ctx.params.locsVazias.map(chaveLoc), ...Object.values(estado.casas ?? {}), ...Object.values(estado.zona ?? {})]);
-  const destinoSc = (m: Missao) => !ctx.areasLoc.get(chaveLoc(m.para))?.has("FR") && !locsFr.has(chaveLoc(m.para));
-  for (const m of Object.values(estado.missoes).filter((x) => x.origem === "auto" && x.status === "pendente" && x.tipo === "movimentacao" && destinoSc(x)).sort((a, b) => (a.id < b.id ? -1 : 1))) {
-    const c = ctx.cxpDe(m.pi);
-    if (!c) continue;
-    const k = chaveLoc(m.para), lim = ctx.ehCalcado(m.pi) ? ctx.params.maxCaixasScCalcado : ctx.params.maxCaixasSc, cx = m.qtd / c;
-    if (ocupAtual(k) + cx > lim + EPS) {
-      m.status = "cancelada"; m.motivoCancelamento = `Automático: a LOC SC ${m.para.end} ${Number.isFinite(ocupAtual(k)) ? `já tem ${Math.round(ocupAtual(k) * 10) / 10} caixa(s) e o limite é ${lim}` : `tem item sem caixa padrão (CXP) conhecida, então não dá para garantir o limite de ${lim} caixas`}.`; m.atualizadoEm = agora; mudou = true;
-    } else ocup.set(k, ocupAtual(k) + cx);
-  }
-
   // 3) auditoria: missão automática pendente que fere um limite (caixas fechadas, máximo de caixas, outro paiol) é cancelada e refeita no próximo plano
   const emAndamento = Object.values(estado.missoes).filter((m) => EM_ANDAMENTO(m.status));
-  const aud = auditar(ctx, emAndamento, new Set(Object.values(estado.zona ?? {})));
+  const aud = auditar(ctx, emAndamento, new Set(Object.values(estado.zona ?? {})), new Set([...Object.values(estado.casas ?? {}), ...Object.values(estado.zona ?? {})]));
   const motivos = new Map<string, string>();
-  for (const v of aud.violacoes) if (["SC-LIMITE", "CX-FECHADA", "PAIOL", "FR-LIMITE"].includes(v.regra) && !motivos.has(v.id)) motivos.set(v.id, `${v.regra}: ${v.detalhe}`);
+  for (const v of aud.violacoes) if (["SC-LIMITE", "SC-NIVEL", "SC-VAZIA", "CX-FECHADA", "PAIOL", "FR-LIMITE"].includes(v.regra) && !motivos.has(v.id)) motivos.set(v.id, `${v.regra}: ${v.detalhe}`);
   for (const [id, motivo] of motivos) {
     const m = estado.missoes[id];
     if (m && m.origem === "auto" && m.status === "pendente") { m.status = "cancelada"; m.motivoCancelamento = `Auditoria: ${motivo}`; m.atualizadoEm = agora; mudou = true; }

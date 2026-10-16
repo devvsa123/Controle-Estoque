@@ -114,7 +114,8 @@ const REGRAS: Record<TipoMissao, string[]> = {
     "Quando a LOC do PI fica abaixo do mínimo, o sistema leva caixas fechadas de SC até cobrir alguns pedidos fracionados médios (parâmetro), sempre entre o mínimo e o máximo.",
     "A média por pedido é a média da quantidade fracionada por pedido (não por dia), porque a maioria dos itens é sazonal. A frequência mostra a cadência dos pedidos fracionados.",
     "Cada LOC de SC comporta no máximo 12 caixas (calçado: 10): a devolução do FR respeita esse limite e, se a LOC encher, o resto vai para outra LOC SC do PI ou para uma LOC SC vazia informada.",
-    "Caixas de SC: mesmo paiol primeiro, depois a validade mais próxima (FEFO). Tudo fica dentro do paiol: o PI é endereçado no paiol onde tem mais saldo e as devoluções vão para o SC do próprio paiol.",
+    "SC: ao final cada LOC tem 1 PI só (a mistura é provisória, usando LOCs vazias como coringa). Altura 02 é a LOC de reposição (caixas soltas; devoluções do FR e consolidações vão para ela); alturas 03, 04 e 05 guardam palete fechado. Quando a altura 02 acaba, desce um palete inteiro de cima para uma LOC vazia de altura 02.",
+        "Caixas de SC: mesmo paiol primeiro, depois a validade mais próxima (FEFO). Tudo fica dentro do paiol: o PI é endereçado no paiol onde tem mais saldo e as devoluções vão para o SC do próprio paiol.",
   ],
   movimentacao: [
     "Objetivo: 1 PI por LOC FR, com 1 a 5 caixas (calçado 1 a 3). O sistema define sozinho a LOC \"casa\" de cada PI com o menor esforço: mantém onde o PI já está sozinho e move o mínimo.",
