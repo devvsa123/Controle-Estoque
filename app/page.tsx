@@ -6,6 +6,7 @@ import AnaliseRM from "@/components/AnaliseRM";
 import Bloqueios from "@/components/Bloqueios";
 import LayoutFr from "@/components/LayoutFr";
 import { AlertasView, MissoesProvider, MissoesTipo, useContagemAlertas } from "@/components/Missoes";
+import { MapaPaiol } from "@/components/MapaPaiol";
 import { NOME_AREA, NOME_DEPOSITO } from "@/lib/config";
 import { cmpVariante, csv, diasAte, fmtData, fmtDataHora, fmtNum, norm } from "@/lib/util";
 
@@ -60,7 +61,7 @@ function SeloAlertas() {
 }
 
 export default function Page() {
-  const [modulo, setModulo] = useState<"estoque" | "rm" | "bloqueios" | "layout" | "recomp" | "movfr" | "alertas">("estoque");
+  const [modulo, setModulo] = useState<"estoque" | "rm" | "bloqueios" | "layout" | "recomp" | "movfr" | "alertas" | "mapa">("estoque");
   const [dados, setDados] = useState<Dados | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [carregando, setCarregando] = useState(true);
@@ -86,7 +87,7 @@ export default function Page() {
   // Abas visitadas continuam montadas (só escondidas): trocar de aba não busca os dados de novo
   // nem perde filtros/buscas. Cada módulo só é montado (e só baixa seus dados) na primeira visita.
   const [visitados, setVisitados] = useState<Record<string, boolean>>({ estoque: true });
-  const abrir = (m: "estoque" | "rm" | "bloqueios" | "layout" | "recomp" | "movfr" | "alertas") => {
+  const abrir = (m: "estoque" | "rm" | "bloqueios" | "layout" | "recomp" | "movfr" | "alertas" | "mapa") => {
     setVisitados((v) => (v[m] ? v : { ...v, [m]: true }));
     setModulo(m);
   };
@@ -101,6 +102,7 @@ export default function Page() {
           <button aria-pressed={modulo === "bloqueios"} onClick={() => abrir("bloqueios")}>Bloqueios NAO ENCONTRADO</button>
           <button aria-pressed={modulo === "recomp"} onClick={() => abrir("recomp")}>Recompletamento</button>
           <button aria-pressed={modulo === "movfr"} onClick={() => abrir("movfr")}>Movimentação FR</button>
+          <button aria-pressed={modulo === "mapa"} onClick={() => abrir("mapa")}>Mapa do paiol</button>
           <button aria-pressed={modulo === "alertas"} onClick={() => abrir("alertas")}>Alertas<SeloAlertas /></button>
         </div>
       </nav>
@@ -125,6 +127,11 @@ export default function Page() {
       {visitados.movfr && (
         <div className="wrap" style={{ paddingTop: 12 }} hidden={modulo !== "movfr"}>
           <MissoesTipo tipo="movimentacao" estoque={dados} />
+        </div>
+      )}
+      {visitados.mapa && (
+        <div className="wrap" style={{ paddingTop: 12, maxWidth: "none" }} hidden={modulo !== "mapa"}>
+          <MapaPaiol estoque={dados} />
         </div>
       )}
       {visitados.alertas && (

@@ -91,7 +91,7 @@ export function useContagemAlertas(): { critico: number; atencao: number } {
   return { critico: a.filter((x) => x.nivel === "critico").length, atencao: a.filter((x) => x.nivel === "atencao").length };
 }
 
-function Carga({ children }: { children: (d: Resposta) => React.ReactNode }) {
+export function Carga({ children }: { children: (d: Resposta) => React.ReactNode }) {
   const { dados, erro, carregando, iniciar, recarregar } = usar();
   useEffect(() => iniciar(), [iniciar]);
   if (erro)
