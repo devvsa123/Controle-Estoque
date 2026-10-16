@@ -2,7 +2,8 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NOME_DEPOSITO } from "@/lib/config";
-import type { Missao } from "@/lib/missoes";
+import type { Missao, Parametros } from "@/lib/missoes";
+import { CALCADOS_PRIMEIRA_PALAVRA } from "@/lib/config";
 import type { Dados } from "@/lib/types";
 import { fmtNum } from "@/lib/util";
 import { Carga } from "./Missoes";
@@ -63,7 +64,7 @@ function montarSlots(d: Dados) {
 
 export function MapaPaiol({ estoque }: { estoque: Dados | null }) {
   if (!estoque) return <p className="muted">Carregando a planilha de estoque…</p>;
-  return <Carga>{(d) => <Mapa estoque={estoque} missoes={d.missoes} />}</Carga>;
+  return <Carga>{(d) => <Mapa estoque={estoque} missoes={d.missoes} params={d.params} />}</Carga>;
 }
 
 // geometria (unidades do SVG; o zoom só escala)
@@ -72,7 +73,7 @@ const LH = 8; // altura de um nível
 const CORREDOR = 30;
 const MARGEM = 54;
 
-function Mapa({ estoque, missoes }: { estoque: Dados; missoes: Missao[] }) {
+function Mapa({ estoque, missoes, params }: { estoque: Dados; missoes: Missao[]; params: Parametros }) {
   const porDep = useMemo(() => montarSlots(estoque), [estoque]);
   const deps = useMemo(() => [...porDep.keys()].sort(), [porDep]);
   const [dep, setDep] = useState(deps.includes("P05") ? "P05" : deps[0] ?? "");
@@ -148,10 +149,23 @@ function Mapa({ estoque, missoes }: { estoque: Dados; missoes: Missao[] }) {
   const tocaSel = (m: Missao) => !!sel && [m.de, m.para].some((l) => { if (l.dep !== dep) return false; const x = RE_END.exec(l.end); return !!x && +x[1] === sel.rua && +x[2] === sel.col; });
   const naSelecao = (s: Slot) => !!sel && s.rua === sel.rua && s.col === sel.col;
 
+  /** Situação de uma LOC FR com um PI só frente ao padrão: entre o mínimo e o máximo de caixas inteiras (calçado tem máximo próprio). */
+  const padraoFr = (s: Slot): { ok: boolean | null; motivo: string } => {
+    const it = s.itens[0];
+    const c = cxpDe(it.pi);
+    if (!c) return { ok: null, motivo: "sem caixa padrão (CXP): não dá para avaliar" };
+    const calcado = CALCADOS_PRIMEIRA_PALAVRA.includes(desc(it.pi).trim().split(/\s+/)[0]?.toUpperCase());
+    const max = params.caixasPorPi[it.pi] > 0 ? params.caixasPorPi[it.pi] : calcado ? params.maxCaixasCalcado : params.maxCaixas;
+    const min = Math.min(max, calcado ? params.minCaixasCalcado : params.minCaixas);
+    const cx = Math.floor(it.qtd / c + 1e-9);
+    if (it.qtd < min * c - 1e-9) return { ok: false, motivo: `abaixo do mínimo: ${fmtNum(cx)} cx (mín. ${min})` };
+    if (cx > max) return { ok: false, motivo: `acima do máximo: ${fmtNum(cx)} cx (máx. ${max}${calcado ? ", calçado" : ""})` };
+    return { ok: true, motivo: `no padrão: ${fmtNum(cx)} cx (entre ${min} e ${max})` };
+  };
   const cor = (s: Slot) => {
     if (s.vazia || s.itens.length === 0) return "#ffffff";
     if (s.itens.length > 1) return "#dc2626";
-    if (s.area === "FR") return "#f59e0b";
+    if (s.area === "FR") { const p = padraoFr(s).ok; return p === true ? "#16a34a" : p === false ? "#f97316" : "#d6b98c"; }
     if (s.area === "SC") return s.nivel <= 2 ? "#60a5fa" : "#1d4ed8";
     return "#94a3b8";
   };
@@ -163,6 +177,8 @@ function Mapa({ estoque, missoes }: { estoque: Dados; missoes: Missao[] }) {
     return {
       total: ss.length,
       fr: ocup.filter((s) => s.area === "FR").length,
+      frOk: ocup.filter((s) => s.area === "FR" && s.itens.length === 1 && padraoFr(s).ok === true).length,
+      frFora: ocup.filter((s) => s.area === "FR" && (s.itens.length > 1 || padraoFr(s).ok === false)).length,
       sc: ocup.filter((s) => s.area === "SC").length,
       vazias: ss.filter((s) => s.vazia).length,
       mistas: ocup.filter((s) => s.itens.length > 1).length,
@@ -212,7 +228,7 @@ function Mapa({ estoque, missoes }: { estoque: Dados; missoes: Missao[] }) {
           ))}
         </div>
         <p className="muted small" style={{ margin: "2px 0" }}>
-          {fmtNum(resumo.total)} posições conhecidas · {fmtNum(resumo.fr)} FR e {fmtNum(resumo.sc)} SC ocupadas · {fmtNum(resumo.vazias)} vazias · <span style={{ color: "#dc2626" }}>{fmtNum(resumo.mistas)} com mais de um PI</span> · {fmtNum(resumo.bloq)} com bloqueio · {fmtNum(abertas.length)} missões abertas no paiol
+          {fmtNum(resumo.total)} posições conhecidas · {fmtNum(resumo.fr)} FR (<span style={{ color: "#16a34a" }}>{fmtNum(resumo.frOk)} no padrão</span>, <span style={{ color: "#ea580c" }}>{fmtNum(resumo.frFora)} fora</span>) e {fmtNum(resumo.sc)} SC ocupadas · {fmtNum(resumo.vazias)} vazias · <span style={{ color: "#dc2626" }}>{fmtNum(resumo.mistas)} com mais de um PI</span> · {fmtNum(resumo.bloq)} com bloqueio · {fmtNum(abertas.length)} missões abertas no paiol
           {desenhadas.length > LIMITE && <> · <strong>mostrando {LIMITE} de {fmtNum(desenhadas.length)} fluxos</strong> (filtre por rua, onda ou tipo)</>}
         </p>
         <Legenda />
@@ -251,7 +267,7 @@ function Mapa({ estoque, missoes }: { estoque: Dados; missoes: Missao[] }) {
               const realce = casaBusca(s);
               const selec = naSelecao(s);
               const bloq = s.itens.some((i) => i.bloq > 0);
-              const titulo = `${dep} ${s.end} · ${s.area || "?"}${s.vazia ? " · VAZIA" : ""}\n` + s.itens.map((i) => {
+              const titulo = `${dep} ${s.end} · ${s.area || "?"}${s.vazia ? " · VAZIA" : ""}${s.area === "FR" && s.itens.length === 1 ? ` · ${padraoFr(s).motivo}` : s.area === "FR" && s.itens.length > 1 ? " · fora do padrão: mais de um PI" : ""}\n` + s.itens.map((i) => {
                 const c = cxpDe(i.pi);
                 return `${i.pi} ${desc(i.pi)}: ${fmtNum(i.qtd)} un${c ? ` (${fmtNum(Math.round((i.qtd / c) * 10) / 10)} cx)` : ""}${i.bloq ? ` · bloq. ${fmtNum(i.bloq)}` : ""}`;
               }).join("\n");
@@ -283,7 +299,7 @@ function Mapa({ estoque, missoes }: { estoque: Dados; missoes: Missao[] }) {
             })}
           </svg>
         </div>
-        <Detalhe sel={sel} dep={dep} slots={slots} missoes={abertas} cxpDe={cxpDe} desc={desc} onFechar={() => setSel(null)} />
+        <Detalhe padrao={(x) => (x.area === "FR" && x.itens.length === 1 ? padraoFr(x) : null)} sel={sel} dep={dep} slots={slots} missoes={abertas} cxpDe={cxpDe} desc={desc} onFechar={() => setSel(null)} />
       </div>
     </div>
   );
@@ -297,14 +313,15 @@ function Legenda() {
   );
   return (
     <p className="small muted" style={{ margin: "4px 0 0" }}>
-      {q("#f59e0b", "FR")}{q("#60a5fa", "SC altura 02 (reposição)")}{q("#1d4ed8", "SC altura 03+ (palete)")}{q("#dc2626", "mais de um PI")}
+      {q("#16a34a", "FR no padrão")}{q("#f97316", "FR fora do padrão (abaixo do mín. ou acima do máx.)")}{q("#d6b98c", "FR sem caixa padrão")}{q("#60a5fa", "SC altura 02 (reposição)")}{q("#1d4ed8", "SC altura 03+ (palete)")}{q("#dc2626", "mais de um PI")}
       {q("#ffffff", "vazia", { borderStyle: "dashed", borderColor: "#94a3b8" })}{q("#facc15", "PI buscado")}
       <span>Contorno preto = saldo bloqueado · cada coluna tem AA (esquerda) e BB (direita), nível 01 junto do corredor · seta tracejada = onda 2 ou mais. Desenho esquemático.</span>
     </p>
   );
 }
 
-function Detalhe({ sel, dep, slots, missoes, cxpDe, desc, onFechar }: {
+function Detalhe({ padrao, sel, dep, slots, missoes, cxpDe, desc, onFechar }: {
+  padrao: (s: Slot) => { ok: boolean | null; motivo: string } | null;
   sel: { rua: number; col: number } | null; dep: string; slots: Map<string, Slot>; missoes: Missao[];
   cxpDe: (pi: string) => number | undefined; desc: (pi: string) => string; onFechar: () => void;
 }) {
@@ -328,7 +345,7 @@ function Detalhe({ sel, dep, slots, missoes, cxpDe, desc, onFechar }: {
         const ms = daLoc(s.end);
         return (
           <div key={s.key} style={{ borderTop: "1px solid var(--line)", padding: "6px 0" }}>
-            <div className="small"><strong>{s.end}</strong> <span className="tag neutral">{s.area === "FR" ? "FR" : s.area === "SC" ? (s.nivel <= 2 ? "SC reposição" : "SC palete") : s.area || "?"}</span>{s.vazia && <span className="tag ok" style={{ marginLeft: 4 }}>vazia</span>}{s.itens.length > 1 && <span className="tag bad" style={{ marginLeft: 4 }}>{s.itens.length} PIs</span>}</div>
+            <div className="small"><strong>{s.end}</strong> <span className="tag neutral">{s.area === "FR" ? "FR" : s.area === "SC" ? (s.nivel <= 2 ? "SC reposição" : "SC palete") : s.area || "?"}</span>{s.vazia && <span className="tag ok" style={{ marginLeft: 4 }}>vazia</span>}{s.itens.length > 1 && <span className="tag bad" style={{ marginLeft: 4 }}>{s.itens.length} PIs</span>}{(() => { const p = padrao(s); return p ? <span className={`tag ${p.ok === true ? "ok" : p.ok === false ? "warn" : "neutral"}`} style={{ marginLeft: 4 }}>{p.motivo}</span> : null; })()}</div>
             {s.itens.map((i) => (
               <div key={i.pi} className="small" style={{ marginLeft: 8 }}>
                 <strong>{i.pi}</strong> {desc(i.pi)} — {fmtNum(i.qtd)} un {cx(i.pi, i.qtd) && <span className="muted">({cx(i.pi, i.qtd)})</span>}{i.bloq > 0 && <span style={{ color: "var(--bad)" }}> · bloqueado {fmtNum(i.bloq)}</span>}
