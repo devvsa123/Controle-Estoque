@@ -68,8 +68,8 @@ export function MapaPaiol({ estoque }: { estoque: Dados | null }) {
 }
 
 // geometria (unidades do SVG; o zoom só escala)
-const CW = 30; // largura de uma posição (coluna): AA + BB
-const LH = 8; // altura de um nível
+const CW = 40; // largura de uma posição (coluna): AA + BB
+const LH = 12; // altura de um nível (cabe o número de caixas dentro)
 const CORREDOR = 30;
 const MARGEM = 54;
 
@@ -271,13 +271,23 @@ function Mapa({ estoque, missoes, params }: { estoque: Dados; missoes: Missao[];
                 const c = cxpDe(i.pi);
                 return `${i.pi} ${desc(i.pi)}: ${fmtNum(i.qtd)} un${c ? ` (${fmtNum(Math.round((i.qtd / c) * 10) / 10)} cx)` : ""}${i.bloq ? ` · bloq. ${fmtNum(i.bloq)}` : ""}`;
               }).join("\n");
+              // total de caixas da LOC (todos os PIs); "+" = sobra solta de menos de 1 caixa; "?" = PI sem caixa padrão
+              let total = 0, semCxp = false;
+              for (const i of s.itens) { const c = cxpDe(i.pi); if (c) total += i.qtd / c; else if (i.qtd > 0) semCxp = true; }
+              const inteiras = Math.floor(total + 1e-9);
+              const rotulo = s.itens.length === 0 ? "" : semCxp && total === 0 ? "?" : `${inteiras}${total - inteiras > 1e-6 ? "+" : ""}${semCxp ? "?" : ""}`;
+              const fundo = realce ? "#facc15" : cor(s);
+              const claro = ["#facc15", "#60a5fa", "#d6b98c", "#ffffff", "#94a3b8"].includes(fundo);
               return (
-                <rect key={s.key} x={g.x} y={g.y} width={g.w} height={g.h} rx={1}
+                <g key={s.key}>
+                <rect x={g.x} y={g.y} width={g.w} height={g.h} rx={1}
                   fill={realce ? "#facc15" : cor(s)} stroke={selec ? "#111" : bloq ? "#111" : s.vazia ? "#94a3b8" : "#cbd5e1"}
                   strokeWidth={selec ? 1.6 : bloq ? 1 : 0.6} strokeDasharray={s.vazia ? "2 1" : undefined}
                   style={{ cursor: "pointer" }} onClick={() => setSel({ rua: s.rua, col: s.col })}>
                   <title>{titulo}</title>
                 </rect>
+                {rotulo && <text x={g.x + g.w / 2} y={g.y + g.h / 2 + 2.9} fontSize={8} fontWeight={700} textAnchor="middle" fill={claro ? "#0f172a" : "#ffffff"} style={{ pointerEvents: "none" }}>{rotulo}</text>}
+                </g>
               );
             })}
             {desenhadas.slice(0, LIMITE).map((m) => {
@@ -315,7 +325,7 @@ function Legenda() {
     <p className="small muted" style={{ margin: "4px 0 0" }}>
       {q("#16a34a", "FR no padrão")}{q("#f97316", "FR fora do padrão (abaixo do mín. ou acima do máx.)")}{q("#d6b98c", "FR sem caixa padrão")}{q("#60a5fa", "SC altura 02 (reposição)")}{q("#1d4ed8", "SC altura 03+ (palete)")}{q("#dc2626", "mais de um PI")}
       {q("#ffffff", "vazia", { borderStyle: "dashed", borderColor: "#94a3b8" })}{q("#facc15", "PI buscado")}
-      <span>Contorno preto = saldo bloqueado · cada coluna tem AA (esquerda) e BB (direita), nível 01 junto do corredor · seta tracejada = onda 2 ou mais. Desenho esquemático.</span>
+      <span>Número = caixas na LOC (todos os PIs; “+” = sobra de menos de 1 caixa; “?” = PI sem caixa padrão) · Contorno preto = saldo bloqueado · cada coluna tem AA (esquerda) e BB (direita), nível 01 junto do corredor · seta tracejada = onda 2 ou mais. Desenho esquemático.</span>
     </p>
   );
 }
