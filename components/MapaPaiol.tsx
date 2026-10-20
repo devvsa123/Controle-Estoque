@@ -164,7 +164,7 @@ function Mapa({ estoque, missoes, params }: { estoque: Dados; missoes: Missao[];
   };
   const cor = (s: Slot) => {
     if (s.vazia || s.itens.length === 0) return "#ffffff";
-    if (s.itens.length > 1) return "#dc2626";
+    if (s.itens.length > 1) return s.area === "SC" ? "#c026d3" : "#dc2626"; // mais de um PI: FR vermelho, SC magenta
     if (s.area === "FR") { const p = padraoFr(s).ok; return p === true ? "#16a34a" : p === false ? "#f97316" : "#d6b98c"; }
     if (s.area === "SC") return s.nivel <= 2 ? "#60a5fa" : "#1d4ed8";
     return "#94a3b8";
@@ -181,7 +181,8 @@ function Mapa({ estoque, missoes, params }: { estoque: Dados; missoes: Missao[];
       frFora: ocup.filter((s) => s.area === "FR" && (s.itens.length > 1 || padraoFr(s).ok === false)).length,
       sc: ocup.filter((s) => s.area === "SC").length,
       vazias: ss.filter((s) => s.vazia).length,
-      mistas: ocup.filter((s) => s.itens.length > 1).length,
+      mistasFr: ocup.filter((s) => s.itens.length > 1 && s.area !== "SC").length,
+      mistasSc: ocup.filter((s) => s.itens.length > 1 && s.area === "SC").length,
       bloq: ocup.filter((s) => s.itens.some((i) => i.bloq > 0)).length,
     };
   }, [slots]);
@@ -228,7 +229,7 @@ function Mapa({ estoque, missoes, params }: { estoque: Dados; missoes: Missao[];
           ))}
         </div>
         <p className="muted small" style={{ margin: "2px 0" }}>
-          {fmtNum(resumo.total)} posições conhecidas · {fmtNum(resumo.fr)} FR (<span style={{ color: "#16a34a" }}>{fmtNum(resumo.frOk)} no padrão</span>, <span style={{ color: "#ea580c" }}>{fmtNum(resumo.frFora)} fora</span>) e {fmtNum(resumo.sc)} SC ocupadas · {fmtNum(resumo.vazias)} vazias · <span style={{ color: "#dc2626" }}>{fmtNum(resumo.mistas)} com mais de um PI</span> · {fmtNum(resumo.bloq)} com bloqueio · {fmtNum(abertas.length)} missões abertas no paiol
+          {fmtNum(resumo.total)} posições conhecidas · {fmtNum(resumo.fr)} FR (<span style={{ color: "#16a34a" }}>{fmtNum(resumo.frOk)} no padrão</span>, <span style={{ color: "#ea580c" }}>{fmtNum(resumo.frFora)} fora</span>) e {fmtNum(resumo.sc)} SC ocupadas · {fmtNum(resumo.vazias)} vazias · com mais de um PI: <span style={{ color: "#dc2626" }}>{fmtNum(resumo.mistasFr)} FR</span> e <span style={{ color: "#c026d3" }}>{fmtNum(resumo.mistasSc)} SC</span> · {fmtNum(resumo.bloq)} com bloqueio · {fmtNum(abertas.length)} missões abertas no paiol
           {desenhadas.length > LIMITE && <> · <strong>mostrando {LIMITE} de {fmtNum(desenhadas.length)} fluxos</strong> (filtre por rua, onda ou tipo)</>}
         </p>
         <Legenda />
@@ -323,7 +324,7 @@ function Legenda() {
   );
   return (
     <p className="small muted" style={{ margin: "4px 0 0" }}>
-      {q("#16a34a", "FR no padrão")}{q("#f97316", "FR fora do padrão (abaixo do mín. ou acima do máx.)")}{q("#d6b98c", "FR sem caixa padrão")}{q("#60a5fa", "SC altura 02 (reposição)")}{q("#1d4ed8", "SC altura 03+ (palete)")}{q("#dc2626", "mais de um PI")}
+      {q("#16a34a", "FR no padrão")}{q("#f97316", "FR fora do padrão (abaixo do mín. ou acima do máx.)")}{q("#d6b98c", "FR sem caixa padrão")}{q("#60a5fa", "SC altura 02 (reposição)")}{q("#1d4ed8", "SC altura 03+ (palete)")}{q("#dc2626", "FR com mais de um PI")}{q("#c026d3", "SC com mais de um PI")}
       {q("#ffffff", "vazia", { borderStyle: "dashed", borderColor: "#94a3b8" })}{q("#facc15", "PI buscado")}
       <span>Número = caixas na LOC (todos os PIs; “+” = sobra de menos de 1 caixa; “?” = PI sem caixa padrão) · Contorno preto = saldo bloqueado · cada coluna tem AA (esquerda) e BB (direita), nível 01 junto do corredor · seta tracejada = onda 2 ou mais. Desenho esquemático.</span>
     </p>
