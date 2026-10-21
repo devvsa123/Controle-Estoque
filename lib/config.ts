@@ -65,6 +65,9 @@ export const RUAS_FORA_LAYOUT_FR: { dep: string; rua: number }[] = [{ dep: "P02"
 /** LOCs vazias vêm das linhas VAZIO da planilha de estoque. Estes paióis não entram como LOC livre para as missões. */
 export const DEPOSITOS_FORA_VAZIOS = ["P03", "P33", "REC", "P04", "P07", "P06"];
 
+/** Classificação de famílias em grupos para o mapa do paiol (JSON compartilhado, gravado no Blob). */
+export const ARQUIVO_GRUPOS = "controle-grupos.json";
+
 /** Missões de reposição/movimentação do FR (JSON compartilhado, gravado no Blob). */
 export const ARQUIVO_MISSOES = "controle-missoes.json";
 

@@ -5,8 +5,12 @@ import { NOME_DEPOSITO } from "@/lib/config";
 import type { Missao, Parametros } from "@/lib/missoes";
 import { CALCADOS_PRIMEIRA_PALAVRA } from "@/lib/config";
 import type { Dados } from "@/lib/types";
-import { fmtNum } from "@/lib/util";
+import type { RmDados } from "@/lib/rm";
+import { COR_OUTROS, PALETA, coresDosGrupos, grupoDaFamilia, tintaSobre, type Classificacao } from "@/lib/grupos";
+import { FAIXAS_COBERTURA, NOME_CLASSE, calcularGiro, diaParaData, faixaCobertura, type ClasseGiro, type FaixaCobertura, type Giro, type GiroPi } from "@/lib/giro";
+import { csv, fmtNum } from "@/lib/util";
 import { Carga } from "./Missoes";
+import { ClassificacaoGrupos } from "./ClassificacaoGrupos";
 
 /* --------------------------------------------------------------------------- modelo */
 
@@ -64,7 +68,59 @@ function montarSlots(d: Dados) {
 
 export function MapaPaiol({ estoque }: { estoque: Dados | null }) {
   if (!estoque) return <p className="muted">Carregando a planilha de estoque…</p>;
-  return <Carga>{(d) => <Mapa estoque={estoque} missoes={d.missoes} params={d.params} />}</Carga>;
+  return <Carga>{(d) => <MapaComAbas estoque={estoque} missoes={d.missoes} params={d.params} />}</Carga>;
+}
+
+type Visao = "situacao" | "grupos" | "giro" | "cobertura";
+
+const COR_CLASSE: Record<ClasseGiro, string> = { A: "#184f95", B: "#3987e5", C: "#86b6ef", S: "#eb6834" };
+const COR_FAIXA: Record<FaixaCobertura, string> = { falta: "#d03b3b", ok: "#d4d3cf", alta: "#6da7ec", excesso: "#1c5cab", parado: "#eda100" };
+const COR_APAGADA = "#eef1f5";
+const COR_FAMILIA_OUTRAS = "#8a8f98";
+
+/** Classificação de grupos (JSON compartilhado) — carregada uma vez e atualizada ao salvar. */
+function useClassificacao() {
+  const [c, setC] = useState<Classificacao | null>(null);
+  const [erro, setErro] = useState<string | null>(null);
+  useEffect(() => {
+    fetch("/api/grupos", { cache: "no-store" })
+      .then(async (r) => { const j = await r.json(); if (!r.ok) throw new Error(j.erro || "Falha ao carregar a classificação"); setC(j); })
+      .catch((e) => setErro(e instanceof Error ? e.message : "Falha ao carregar a classificação"));
+  }, []);
+  return { classif: c, setClassif: setC, erro };
+}
+
+/** Planilha de pedidos: só baixa quando uma visão que precisa dela é aberta. */
+function useRm(ativo: boolean) {
+  const [rm, setRm] = useState<RmDados | null>(null);
+  const [erro, setErro] = useState<string | null>(null);
+  const pedido = useRef(false);
+  useEffect(() => {
+    if (!ativo || pedido.current) return;
+    pedido.current = true;
+    fetch("/api/rm", { cache: "no-store" })
+      .then(async (r) => { const j = await r.json(); if (!r.ok) throw new Error(j.erro || "Falha ao carregar a planilha de pedidos"); setRm(j); })
+      .catch((e) => { pedido.current = false; setErro(e instanceof Error ? e.message : "Falha ao carregar a planilha de pedidos"); });
+  }, [ativo]);
+  return { rm, erro };
+}
+
+function MapaComAbas({ estoque, missoes, params }: { estoque: Dados; missoes: Missao[]; params: Parametros }) {
+  const [aba, setAba] = useState<"mapa" | "classificacao">("mapa");
+  const { classif, setClassif, erro } = useClassificacao();
+  return (
+    <div className="grid" style={{ gap: 12 }}>
+      <div className="seg" role="group" aria-label="Mapa ou classificação" style={{ justifySelf: "start" }}>
+        <button aria-pressed={aba === "mapa"} onClick={() => setAba("mapa")}>Mapa</button>
+        <button aria-pressed={aba === "classificacao"} onClick={() => setAba("classificacao")}>Classificação de grupos e famílias</button>
+      </div>
+      {erro && <div className="note">{erro}. O mapa por grupos usa a classificação padrão (1ª palavra da descrição).</div>}
+      <div hidden={aba !== "mapa"}>
+        <Mapa estoque={estoque} missoes={missoes} params={params} classif={classif} />
+      </div>
+      {aba === "classificacao" && <ClassificacaoGrupos estoque={estoque} classif={classif} onSalvo={setClassif} />}
+    </div>
+  );
 }
 
 // geometria (unidades do SVG; o zoom só escala)
@@ -73,8 +129,34 @@ const LH = 12; // altura de um nível (cabe o número de caixas dentro)
 const CORREDOR = 30;
 const MARGEM = 54;
 
-function Mapa({ estoque, missoes, params }: { estoque: Dados; missoes: Missao[]; params: Parametros }) {
+function Mapa({ estoque, missoes, params, classif }: { estoque: Dados; missoes: Missao[]; params: Parametros; classif: Classificacao | null }) {
   const porDep = useMemo(() => montarSlots(estoque), [estoque]);
+  const [visao, setVisaoBruta] = useState<Visao>("situacao");
+  const [setas, setSetas] = useState(true);
+  // nas visões de grupo e giro as setas das missões escondem as cores: começam desligadas
+  const setVisao = (v: Visao) => { setVisaoBruta(v); setSetas(v === "situacao"); };
+  const [grupoFoco, setGrupoFoco] = useState<string | null>(null);
+  const [periodo, setPeriodo] = useState(365);
+  const precisaRm = visao === "giro" || visao === "cobertura";
+  const { rm, erro: erroRm } = useRm(precisaRm);
+  const giro = useMemo(() => (rm ? calcularGiro(rm, estoque, periodo || null) : null), [rm, estoque, periodo]);
+  const familiaDe = (pi: string) => estoque.produtos[pi]?.familia ?? pi;
+  const grupoDe = (pi: string) => grupoDaFamilia(classif, familiaDe(pi));
+  const coresGrupo = useMemo(() => coresDosGrupos(estoque, classif), [estoque, classif]);
+  // cores das famílias do grupo em foco: as 8 que mais ocupam LOCs no estoque inteiro (estáveis ao trocar de paiol)
+  const coresFamilia = useMemo(() => {
+    const m = new Map<string, string>();
+    if (!grupoFoco) return m;
+    const locs = new Map<string, Set<string>>();
+    for (const l of estoque.linhas) {
+      if (estoque.escopos[l.dep] !== "estoque" || !(l.total > 0 || l.disp > 0)) continue;
+      const f = estoque.produtos[l.pi]?.familia ?? l.pi;
+      if (grupoDaFamilia(classif, f) !== grupoFoco) continue;
+      (locs.get(f) ?? locs.set(f, new Set()).get(f)!).add(`${l.dep}|${l.end}`);
+    }
+    [...locs.entries()].sort((a, b) => b[1].size - a[1].size || a[0].localeCompare(b[0])).forEach(([f], i) => m.set(f, PALETA[i] ?? COR_FAMILIA_OUTRAS));
+    return m;
+  }, [estoque, classif, grupoFoco]);
   const deps = useMemo(() => [...porDep.keys()].sort(), [porDep]);
   const [dep, setDep] = useState(deps.includes("P05") ? "P05" : deps[0] ?? "");
   const [rua, setRua] = useState<number | "">("");
@@ -170,6 +252,34 @@ function Mapa({ estoque, missoes, params }: { estoque: Dados; missoes: Missao[];
     return "#94a3b8";
   };
 
+  /** PI que mais ocupa a LOC (em caixas, ou unidades sem caixa padrão): é ele que dá a cor nas visões por PI. */
+  const dominante = (s: Slot) => {
+    let melhor = s.itens[0], v = -1;
+    for (const i of s.itens) { const c = cxpDe(i.pi); const x = c ? i.qtd / c : i.qtd / 1e6; if (x > v) { v = x; melhor = i; } }
+    return melhor;
+  };
+  const corVisao = (s: Slot) => {
+    if (visao === "situacao" || s.vazia || s.itens.length === 0) return cor(s);
+    const pi = dominante(s).pi;
+    if (visao === "grupos") {
+      const g = grupoDe(pi);
+      if (grupoFoco) return g === grupoFoco ? coresFamilia.get(familiaDe(pi)) ?? COR_FAMILIA_OUTRAS : COR_APAGADA;
+      return coresGrupo.get(g) ?? COR_OUTROS;
+    }
+    const gp = giro?.porPi.get(pi);
+    if (!gp) return COR_APAGADA;
+    return visao === "giro" ? COR_CLASSE[gp.classe] : COR_FAIXA[faixaCobertura(gp)];
+  };
+  const infoPi = (pi: string): string => {
+    if (visao === "grupos") return `grupo ${grupoDe(pi)} · família ${familiaDe(pi)}`;
+    if (visao === "giro" || visao === "cobertura") {
+      const g = giro?.porPi.get(pi);
+      if (!g) return "";
+      return `${g.classe === "S" ? "sem saída no período" : `classe ${g.classe}`} · ${fmtNum(g.pedidos)} pedidos · ${fmtNum(g.unidades)} un no período · última saída ${diaParaData(g.ultimoDia)} · cobertura ${g.cobertura === null ? "—" : `${fmtNum(Math.round(g.cobertura))} dias`}`;
+    }
+    return "";
+  };
+
   // números do paiol
   const resumo = useMemo(() => {
     const ss = [...slots.values()];
@@ -193,7 +303,7 @@ function Mapa({ estoque, missoes, params }: { estoque: Dados; missoes: Missao[];
   }, [abertas, frLocs]);
 
   const ruaVisivel = (l: { dep: string; end: string }) => l.dep === dep && (rua === "" || Number(l.end.split("-")[0]) === rua);
-  const desenhadas = visiveis.filter((m) => (!soDaSelecao || tocaSel(m)) && (ruaVisivel(m.de) || ruaVisivel(m.para)));
+  const desenhadas = !setas ? [] : visiveis.filter((m) => (!soDaSelecao || tocaSel(m)) && (ruaVisivel(m.de) || ruaVisivel(m.para)));
   const LIMITE = 600;
 
   return (
@@ -212,6 +322,9 @@ function Mapa({ estoque, missoes, params }: { estoque: Dados; missoes: Missao[];
             <option value="">Todas as ondas</option>
             {ondas.map((o) => <option key={o} value={o}>Onda {o}</option>)}
           </select>
+          <label className="small" style={{ display: "flex", gap: 4, alignItems: "center" }}>
+            <input type="checkbox" checked={setas} onChange={(e) => setSetas(e.target.checked)} /> setas das missões
+          </label>
           <label className="small" style={{ display: "flex", gap: 4, alignItems: "center" }}>
             <input type="checkbox" checked={soDaSelecao} onChange={(e) => setSoDaSelecao(e.target.checked)} /> fluxos só da posição selecionada
           </label>
@@ -232,7 +345,29 @@ function Mapa({ estoque, missoes, params }: { estoque: Dados; missoes: Missao[];
           {fmtNum(resumo.total)} posições conhecidas · {fmtNum(resumo.fr)} FR (<span style={{ color: "#16a34a" }}>{fmtNum(resumo.frOk)} no padrão</span>, <span style={{ color: "#ea580c" }}>{fmtNum(resumo.frFora)} fora</span>) e {fmtNum(resumo.sc)} SC ocupadas · {fmtNum(resumo.vazias)} vazias · com mais de um PI: <span style={{ color: "#dc2626" }}>{fmtNum(resumo.mistasFr)} FR</span> e <span style={{ color: "#c026d3" }}>{fmtNum(resumo.mistasSc)} SC</span> · {fmtNum(resumo.bloq)} com bloqueio · {fmtNum(abertas.length)} missões abertas no paiol
           {desenhadas.length > LIMITE && <> · <strong>mostrando {LIMITE} de {fmtNum(desenhadas.length)} fluxos</strong> (filtre por rua, onda ou tipo)</>}
         </p>
-        <Legenda />
+        <div className="bar" style={{ margin: "8px 0 0", gap: 8 }}>
+          <span className="small muted">Visão:</span>
+          <div className="seg" role="group" aria-label="Visão do mapa">
+            <button aria-pressed={visao === "situacao"} onClick={() => setVisao("situacao")}>Situação das LOCs</button>
+            <button aria-pressed={visao === "grupos"} onClick={() => setVisao("grupos")}>Grupos e famílias</button>
+            <button aria-pressed={visao === "giro"} onClick={() => setVisao("giro")}>Giro (pedidos)</button>
+            <button aria-pressed={visao === "cobertura"} onClick={() => setVisao("cobertura")}>Cobertura (estoque × saída)</button>
+          </div>
+          {precisaRm && (
+            <select value={periodo} onChange={(e) => setPeriodo(+e.target.value)} aria-label="Período dos pedidos">
+              <option value={90}>Pedidos dos últimos 90 dias</option>
+              <option value={180}>Pedidos dos últimos 180 dias</option>
+              <option value={365}>Pedidos dos últimos 12 meses</option>
+              <option value={0}>Todo o histórico de pedidos</option>
+            </select>
+          )}
+        </div>
+        {visao === "situacao" && <Legenda />}
+        {visao === "grupos" && (
+          <LegendaGrupos slots={slots} grupoDe={grupoDe} familiaDe={familiaDe} dominante={dominante} coresGrupo={coresGrupo} coresFamilia={coresFamilia} foco={grupoFoco} setFoco={setGrupoFoco} />
+        )}
+        {precisaRm && !giro && <p className="small muted" style={{ margin: "6px 0 0" }}>{erroRm ? `Não foi possível carregar a planilha de pedidos: ${erroRm}` : "Carregando a planilha de pedidos…"}</p>}
+        {precisaRm && giro && <LegendaGiro visao={visao} giro={giro} slots={slots} dominante={dominante} />}
       </div>
 
       <div style={{ display: "flex", gap: 12, alignItems: "flex-start", flexWrap: "wrap" }}>
@@ -277,17 +412,21 @@ function Mapa({ estoque, missoes, params }: { estoque: Dados; missoes: Missao[];
               for (const i of s.itens) { const c = cxpDe(i.pi); if (c) total += i.qtd / c; else if (i.qtd > 0) semCxp = true; }
               const inteiras = Math.floor(total + 1e-9);
               const rotulo = s.itens.length === 0 ? "" : semCxp && total === 0 ? "?" : `${inteiras}${total - inteiras > 1e-6 ? "+" : ""}${semCxp ? "?" : ""}`;
-              const fundo = realce ? "#facc15" : cor(s);
-              const claro = ["#facc15", "#60a5fa", "#d6b98c", "#ffffff", "#94a3b8"].includes(fundo);
+              // na visão de situação a busca pinta de amarelo; nas outras, apaga o que não casa (a cor continua dizendo o grupo/giro)
+              const situacao = visao === "situacao";
+              const fundo = situacao && realce ? "#facc15" : corVisao(s);
+              const apagado = !situacao && !!termo && !realce;
+              const info = situacao ? "" : s.itens.map((i) => { const t = infoPi(i.pi); return t ? `\n${i.pi}: ${t}` : ""; }).join("");
               return (
-                <g key={s.key}>
+                <g key={s.key} opacity={apagado ? 0.18 : 1}>
                 <rect x={g.x} y={g.y} width={g.w} height={g.h} rx={1}
-                  fill={realce ? "#facc15" : cor(s)} stroke={selec ? "#111" : bloq ? "#111" : s.vazia ? "#94a3b8" : "#cbd5e1"}
+                  fill={fundo} stroke={selec ? "#111" : bloq ? "#111" : s.vazia ? "#94a3b8" : "#cbd5e1"}
                   strokeWidth={selec ? 1.6 : bloq ? 1 : 0.6} strokeDasharray={s.vazia ? "2 1" : undefined}
                   style={{ cursor: "pointer" }} onClick={() => setSel({ rua: s.rua, col: s.col })}>
-                  <title>{titulo}</title>
+                  <title>{titulo + info}</title>
                 </rect>
-                {rotulo && <text x={g.x + g.w / 2} y={g.y + g.h / 2 + 2.9} fontSize={8} fontWeight={700} textAnchor="middle" fill={claro ? "#0f172a" : "#ffffff"} style={{ pointerEvents: "none" }}>{rotulo}</text>}
+                {!situacao && s.itens.length > 1 && <path d={`M${g.x + g.w - 5},${g.y} L${g.x + g.w},${g.y} L${g.x + g.w},${g.y + 5} z`} fill="#0f172a" style={{ pointerEvents: "none" }} />}
+                {rotulo && <text x={g.x + g.w / 2} y={g.y + g.h / 2 + 2.9} fontSize={8} fontWeight={700} textAnchor="middle" fill={fundo === COR_APAGADA ? "#a3acb9" : tintaSobre(fundo)} style={{ pointerEvents: "none" }}>{rotulo}</text>}
                 </g>
               );
             })}
@@ -310,8 +449,12 @@ function Mapa({ estoque, missoes, params }: { estoque: Dados; missoes: Missao[];
             })}
           </svg>
         </div>
-        <Detalhe padrao={(x) => (x.area === "FR" && x.itens.length === 1 ? padraoFr(x) : null)} sel={sel} dep={dep} slots={slots} missoes={abertas} cxpDe={cxpDe} desc={desc} onFechar={() => setSel(null)} />
+        <Detalhe padrao={(x) => (x.area === "FR" && x.itens.length === 1 ? padraoFr(x) : null)} sel={sel} dep={dep} slots={slots} missoes={abertas} cxpDe={cxpDe} desc={desc} info={infoPi} onFechar={() => setSel(null)} />
       </div>
+      {visao === "grupos" && (
+        <PainelGrupos slots={slots} grupoDe={grupoDe} familiaDe={familiaDe} cxpDe={cxpDe} coresGrupo={coresGrupo} coresFamilia={coresFamilia} foco={grupoFoco} setFoco={setGrupoFoco} dep={dep} />
+      )}
+      {precisaRm && giro && <AnaliseGiro estoque={estoque} giro={giro} slots={slots} dep={dep} cxpDe={cxpDe} desc={desc} />}
     </div>
   );
 }
@@ -331,10 +474,10 @@ function Legenda() {
   );
 }
 
-function Detalhe({ padrao, sel, dep, slots, missoes, cxpDe, desc, onFechar }: {
+function Detalhe({ padrao, sel, dep, slots, missoes, cxpDe, desc, info, onFechar }: {
   padrao: (s: Slot) => { ok: boolean | null; motivo: string } | null;
   sel: { rua: number; col: number } | null; dep: string; slots: Map<string, Slot>; missoes: Missao[];
-  cxpDe: (pi: string) => number | undefined; desc: (pi: string) => string; onFechar: () => void;
+  cxpDe: (pi: string) => number | undefined; desc: (pi: string) => string; info: (pi: string) => string; onFechar: () => void;
 }) {
   if (!sel) return (
     <div className="card" style={{ flex: "0 1 380px", minWidth: 280 }}>
@@ -360,6 +503,7 @@ function Detalhe({ padrao, sel, dep, slots, missoes, cxpDe, desc, onFechar }: {
             {s.itens.map((i) => (
               <div key={i.pi} className="small" style={{ marginLeft: 8 }}>
                 <strong>{i.pi}</strong> {desc(i.pi)} — {fmtNum(i.qtd)} un {cx(i.pi, i.qtd) && <span className="muted">({cx(i.pi, i.qtd)})</span>}{i.bloq > 0 && <span style={{ color: "var(--bad)" }}> · bloqueado {fmtNum(i.bloq)}</span>}
+                {info(i.pi) && <div className="muted" style={{ marginLeft: 12 }}>{info(i.pi)}</div>}
               </div>
             ))}
             {ms.map((m) => {
@@ -374,6 +518,231 @@ function Detalhe({ padrao, sel, dep, slots, missoes, cxpDe, desc, onFechar }: {
           </div>
         );
       })}
+    </div>
+  );
+}
+
+/* --------------------------------------------------------------------------- visão por grupos */
+
+const ruasTexto = (ruas: Set<number>) => [...ruas].sort((a, b) => a - b).map((r) => String(r).padStart(2, "0")).join(", ");
+const Amostra = ({ cor }: { cor: string }) => (
+  <span style={{ width: 12, height: 9, background: cor, border: "1px solid #cbd5e1", display: "inline-block", marginRight: 5, verticalAlign: "middle" }} />
+);
+
+function LegendaGrupos({ slots, grupoDe, familiaDe, dominante, coresGrupo, coresFamilia, foco, setFoco }: {
+  slots: Map<string, Slot>; grupoDe: (pi: string) => string; familiaDe: (pi: string) => string; dominante: (s: Slot) => Item;
+  coresGrupo: Map<string, string>; coresFamilia: Map<string, string>; foco: string | null; setFoco: (g: string | null) => void;
+}) {
+  // contagem pelo PI que dá a cor da LOC (o mesmo critério do desenho)
+  const cont = new Map<string, number>();
+  for (const s of slots.values()) {
+    if (!s.itens.length) continue;
+    const pi = dominante(s).pi;
+    if (foco && grupoDe(pi) !== foco) continue;
+    const k = foco ? familiaDe(pi) : grupoDe(pi);
+    cont.set(k, (cont.get(k) ?? 0) + 1);
+  }
+  const cores = foco ? coresFamilia : coresGrupo;
+  const outra = foco ? COR_FAMILIA_OUTRAS : COR_OUTROS;
+  const lista = [...cont.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const comCor = lista.filter(([k]) => (cores.get(k) ?? outra) !== outra);
+  const semCor = lista.filter(([k]) => (cores.get(k) ?? outra) === outra);
+  return (
+    <div className="small" style={{ marginTop: 6, display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+      {foco && <button className="chip" onClick={() => setFoco(null)}>← todos os grupos</button>}
+      {foco && <strong>{foco}:</strong>}
+      {comCor.map(([k, n]) => (
+        <button key={k} className="chip" onClick={() => !foco && setFoco(k)} title={foco ? k : "Clique para ver só este grupo, colorido por família"}>
+          <Amostra cor={cores.get(k)!} />{k} ({fmtNum(n)})
+        </button>
+      ))}
+      {semCor.length > 0 && <span className="muted"><Amostra cor={outra} />{foco ? "outras famílias" : "outros grupos"}: {fmtNum(semCor.length)} ({fmtNum(semCor.reduce((t, [, n]) => t + n, 0))} LOCs)</span>}
+      <span className="muted">· número = caixas na LOC · triângulo no canto = mais de um PI (a cor é a do PI com mais caixas) · {foco ? "cinza claro = outros grupos" : "clique num grupo (aqui ou na tabela abaixo) para isolá-lo e ver as famílias"}</span>
+    </div>
+  );
+}
+
+interface Agrupado { nome: string; fr: number; sc: number; caixas: number; pis: Set<string>; ruas: Set<number> }
+
+function PainelGrupos({ slots, grupoDe, familiaDe, cxpDe, coresGrupo, coresFamilia, foco, setFoco, dep }: {
+  slots: Map<string, Slot>; grupoDe: (pi: string) => string; familiaDe: (pi: string) => string; cxpDe: (pi: string) => number | undefined;
+  coresGrupo: Map<string, string>; coresFamilia: Map<string, string>; foco: string | null; setFoco: (g: string | null) => void; dep: string;
+}) {
+  const linhas = useMemo(() => {
+    const m = new Map<string, Agrupado>();
+    for (const s of slots.values()) {
+      const vistos = new Set<string>();
+      for (const i of s.itens) {
+        if (foco && grupoDe(i.pi) !== foco) continue;
+        const k = foco ? familiaDe(i.pi) : grupoDe(i.pi);
+        const a = m.get(k) ?? m.set(k, { nome: k, fr: 0, sc: 0, caixas: 0, pis: new Set(), ruas: new Set() }).get(k)!;
+        if (!vistos.has(k)) { vistos.add(k); if (s.area === "FR") a.fr++; else if (s.area === "SC") a.sc++; }
+        const c = cxpDe(i.pi);
+        if (c) a.caixas += i.qtd / c;
+        a.pis.add(i.pi);
+        a.ruas.add(s.rua);
+      }
+    }
+    return [...m.values()].sort((a, b) => b.fr + b.sc - (a.fr + a.sc) || a.nome.localeCompare(b.nome));
+  }, [slots, foco, grupoDe, familiaDe, cxpDe]);
+  const cores = foco ? coresFamilia : coresGrupo;
+  const outra = foco ? COR_FAMILIA_OUTRAS : COR_OUTROS;
+  const baixar = () => {
+    const cab = [foco ? "Família" : "Grupo", "LOCs FR", "LOCs SC", "Caixas", "PIs", "Ruas"];
+    const corpo = linhas.map((a) => [a.nome, a.fr, a.sc, Math.round(a.caixas), a.pis.size, ruasTexto(a.ruas)]);
+    baixarCsv(`${foco ? "familias-" + foco : "grupos"}-${dep}.csv`, cab, corpo);
+  };
+  return (
+    <div className="card">
+      <div className="bar" style={{ justifyContent: "space-between", marginBottom: 8 }}>
+        <h2 style={{ margin: 0 }}>{foco ? `Famílias do grupo ${foco} no ${dep}` : `Grupos no ${dep}`} ({fmtNum(linhas.length)})</h2>
+        <span>{foco && <button className="btn" onClick={() => setFoco(null)} style={{ marginRight: 6 }}>Voltar aos grupos</button>}<button className="btn" onClick={baixar}>Baixar CSV</button></span>
+      </div>
+      <p className="small muted" style={{ marginTop: 0 }}>Muitas ruas para o mesmo {foco ? "família" : "grupo"} = material espalhado pelo paiol. LOCs contam cada posição uma vez por {foco ? "família" : "grupo"}, mesmo com vários PIs.</p>
+      <div style={{ maxHeight: 420, overflow: "auto" }}>
+        <table>
+          <thead><tr><th>{foco ? "Família" : "Grupo"}</th><th className="n">LOCs FR</th><th className="n">LOCs SC</th><th className="n">Caixas</th><th className="n">PIs</th><th className="n">Nº ruas</th><th>Ruas</th></tr></thead>
+          <tbody>
+            {linhas.map((a) => (
+              <tr key={a.nome} onClick={() => !foco && setFoco(a.nome)} style={{ cursor: foco ? undefined : "pointer" }}>
+                <td><Amostra cor={cores.get(a.nome) ?? outra} />{a.nome}</td>
+                <td className="n">{fmtNum(a.fr)}</td><td className="n">{fmtNum(a.sc)}</td><td className="n">{fmtNum(Math.round(a.caixas))}</td>
+                <td className="n">{fmtNum(a.pis.size)}</td><td className="n">{fmtNum(a.ruas.size)}</td><td className="small">{ruasTexto(a.ruas)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function baixarCsv(nome: string, cab: string[], corpo: (string | number)[][]) {
+  const blob = new Blob(["﻿" + csv([cab, ...corpo])], { type: "text/csv;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = nome;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+
+/* --------------------------------------------------------------------------- visão de giro e cobertura */
+
+function LegendaGiro({ visao, giro, slots, dominante }: { visao: Visao; giro: Giro; slots: Map<string, Slot>; dominante: (s: Slot) => Item }) {
+  const cont = new Map<string, number>();
+  for (const s of slots.values()) {
+    if (!s.itens.length) continue;
+    const g = giro.porPi.get(dominante(s).pi);
+    if (!g) continue;
+    const k = visao === "giro" ? g.classe : faixaCobertura(g);
+    cont.set(k, (cont.get(k) ?? 0) + 1);
+  }
+  const itens: [string, string, string][] = visao === "giro"
+    ? (["A", "B", "C", "S"] as ClasseGiro[]).map((c) => [c, COR_CLASSE[c], NOME_CLASSE[c]])
+    : FAIXAS_COBERTURA.map((f) => [f.id, COR_FAIXA[f.id], f.nome]);
+  return (
+    <div className="small" style={{ marginTop: 6 }}>
+      {itens.map(([k, c, nome]) => (
+        <span key={k} style={{ display: "inline-flex", alignItems: "center", marginRight: 14 }}><Amostra cor={c} />{nome}: <strong style={{ marginLeft: 4 }}>{fmtNum(cont.get(k) ?? 0)} LOCs</strong></span>
+      ))}
+      <div className="muted" style={{ marginTop: 4 }}>
+        Pedidos de {diaParaData(giro.inicio)} a {diaParaData(giro.fim)} ({fmtNum(giro.dias)} dias), do estoque inteiro (todos os paióis).{" "}
+        {visao === "giro"
+          ? "Classe pelo número de linhas de pedido do PI: A reúne os PIs que somam 80% das linhas, B os 15% seguintes e C os 5% finais."
+          : "Cobertura = saldo do PI em todos os paióis ÷ saída média por dia no período."}{" "}
+        A cor é a do PI com mais caixas na LOC; triângulo no canto = mais de um PI.
+      </div>
+    </div>
+  );
+}
+
+type ListaId = "parados" | "frBaixo" | "altoSemFr" | "falta" | "excesso";
+
+function AnaliseGiro({ estoque, giro, slots, dep, cxpDe, desc }: {
+  estoque: Dados; giro: Giro; slots: Map<string, Slot>; dep: string; cxpDe: (pi: string) => number | undefined; desc: (pi: string) => string;
+}) {
+  const [lista, setLista] = useState<ListaId>("parados");
+  const r = useMemo(() => {
+    const frGlobal = new Set<string>();
+    for (const l of estoque.linhas) if (estoque.escopos[l.dep] === "estoque" && l.area === "FR" && (l.total > 0 || l.disp > 0)) frGlobal.add(l.pi);
+    const porPi = new Map<string, { fr: Set<string>; sc: Set<string>; qtd: number }>();
+    let locs = 0, locsParadoFr = 0, locsParadoSc = 0, cxTotal = 0, cxParado = 0;
+    const frBaixo: (string | number)[][] = [];
+    for (const s of slots.values()) {
+      if (!s.itens.length) continue;
+      locs++;
+      let parado = false;
+      for (const i of s.itens) {
+        const a = porPi.get(i.pi) ?? porPi.set(i.pi, { fr: new Set(), sc: new Set(), qtd: 0 }).get(i.pi)!;
+        (s.area === "FR" ? a.fr : a.sc).add(s.end);
+        a.qtd += i.qtd;
+        const g = giro.porPi.get(i.pi);
+        const c = cxpDe(i.pi);
+        const cx = c ? i.qtd / c : 0;
+        cxTotal += cx;
+        if (g?.classe === "S") { parado = true; cxParado += cx; }
+        if (s.area === "FR" && g && (g.classe === "S" || g.classe === "C"))
+          frBaixo.push([s.end, i.pi, desc(i.pi), g.classe === "S" ? "sem saída" : "C", g.pedidos, diaParaData(g.ultimoDia), c ? Math.round(cx * 10) / 10 : "?"]);
+      }
+      if (parado) { if (s.area === "FR") locsParadoFr++; else locsParadoSc++; }
+    }
+    const linhaPi = (pi: string, g: GiroPi, a: { fr: Set<string>; sc: Set<string>; qtd: number }) => {
+      const c = cxpDe(pi);
+      return [pi, desc(pi), g.classe === "S" ? "sem saída" : g.classe, g.pedidos, g.unidades, diaParaData(g.ultimoDia), g.saldo, g.cobertura === null ? "—" : Math.round(g.cobertura), a.fr.size, a.sc.size, c ? Math.round(a.qtd / c) : "?"];
+    };
+    const pisPaiol = [...porPi.entries()].map(([pi, a]) => ({ pi, a, g: giro.porPi.get(pi)! })).filter((x) => x.g);
+    const cxDe = (x: { pi: string; a: { qtd: number } }) => { const c = cxpDe(x.pi); return c ? x.a.qtd / c : 0; };
+    const ordCx = (a: { pi: string; a: { qtd: number } }, b: { pi: string; a: { qtd: number } }) => cxDe(b) - cxDe(a) || b.a.qtd - a.a.qtd;
+    const listas: Record<ListaId, (string | number)[][]> = {
+      parados: pisPaiol.filter((x) => x.g.classe === "S").sort(ordCx).map((x) => linhaPi(x.pi, x.g, x.a)),
+      frBaixo: frBaixo.sort((a, b) => String(a[0]).localeCompare(String(b[0]))),
+      altoSemFr: pisPaiol.filter((x) => x.g.classe === "A" && !frGlobal.has(x.pi)).sort((a, b) => b.g.pedidos - a.g.pedidos).map((x) => linhaPi(x.pi, x.g, x.a)),
+      falta: pisPaiol.filter((x) => x.g.cobertura !== null && x.g.cobertura < 30).sort((a, b) => a.g.cobertura! - b.g.cobertura!).map((x) => linhaPi(x.pi, x.g, x.a)),
+      excesso: pisPaiol.filter((x) => x.g.cobertura !== null && x.g.cobertura >= 365).sort(ordCx).map((x) => linhaPi(x.pi, x.g, x.a)),
+    };
+    return { listas, locs, locsParadoFr, locsParadoSc, cxTotal, cxParado, pis: pisPaiol.length, parados: listas.parados.length };
+  }, [estoque, giro, slots, cxpDe, desc]);
+
+  const CAB_PI = ["PI", "Descrição", "Classe", "Pedidos", "Un. pedidas", "Última saída", "Saldo total", "Cobertura (dias)", "LOCs FR no paiol", "LOCs SC no paiol", "Caixas no paiol"];
+  const DEFS: Record<ListaId, { nome: string; explica: string; cab: string[] }> = {
+    parados: { nome: "Parados (sem saída)", explica: "PIs com saldo neste paiol e nenhuma linha de pedido no período, dos que mais ocupam caixas para os que menos ocupam. Candidatos a ir para as alturas de cima, para outro paiol ou para revisão.", cab: CAB_PI },
+    frBaixo: { nome: "Baixo giro ocupando o FR", explica: "LOCs do FR deste paiol ocupadas por PI de classe C ou sem saída. Liberar essas LOCs abre espaço no picking para itens de mais saída.", cab: ["LOC", "PI", "Descrição", "Classe", "Pedidos", "Última saída", "Caixas na LOC"] },
+    altoSemFr: { nome: "Alto giro sem LOC no FR", explica: "PIs de classe A com saldo neste paiol e sem nenhuma LOC no FR (em nenhum paiol): toda saída depende de abrir caixa no SC.", cab: CAB_PI },
+    falta: { nome: "Risco de falta", explica: "PIs deste paiol cujo saldo total cobre menos de 30 dias da saída média do período.", cab: CAB_PI },
+    excesso: { nome: "Excesso de estoque", explica: "PIs deste paiol com saldo para mais de 1 ano de saída no ritmo do período, dos que mais ocupam caixas.", cab: CAB_PI },
+  };
+  const def = DEFS[lista];
+  const linhas = r.listas[lista];
+  const MAX = 200;
+  const pctx = (a: number, b: number) => (b ? `${Math.round((a / b) * 100)}%` : "—");
+  return (
+    <div className="card">
+      <h2>Saída (RM) × estoque no {dep}</h2>
+      <div className="grid" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(170px, 1fr))", gap: 8, marginBottom: 10 }}>
+        <div className="card kpi"><div className="v">{fmtNum(r.pis)}</div><div className="l">PIs com saldo no paiol</div></div>
+        <div className="card kpi warn"><div className="v">{fmtNum(r.parados)}</div><div className="l">sem saída no período ({pctx(r.parados, r.pis)})</div></div>
+        <div className="card kpi warn"><div className="v">{fmtNum(r.locsParadoFr + r.locsParadoSc)}</div><div className="l">LOCs com PI parado ({fmtNum(r.locsParadoFr)} FR, {fmtNum(r.locsParadoSc)} SC) de {fmtNum(r.locs)} ocupadas</div></div>
+        <div className="card kpi warn"><div className="v">{fmtNum(Math.round(r.cxParado))}</div><div className="l">caixas paradas ({pctx(r.cxParado, r.cxTotal)} das caixas do paiol)</div></div>
+      </div>
+      <div className="chips" role="group" aria-label="Lista" style={{ marginBottom: 6 }}>
+        {(Object.keys(DEFS) as ListaId[]).map((k) => (
+          <button key={k} className="chip" aria-pressed={lista === k} onClick={() => setLista(k)}>{DEFS[k].nome} ({fmtNum(r.listas[k].length)})</button>
+        ))}
+        <button className="btn" style={{ marginLeft: "auto" }} onClick={() => baixarCsv(`${lista}-${dep}.csv`, def.cab, linhas)}>Baixar CSV</button>
+      </div>
+      <p className="small muted" style={{ marginTop: 0 }}>{def.explica}</p>
+      <div style={{ maxHeight: 460, overflow: "auto" }}>
+        <table>
+          <thead><tr>{def.cab.map((c, i) => <th key={c} className={i >= 3 && c !== "Última saída" ? "n" : undefined}>{c}</th>)}</tr></thead>
+          <tbody>
+            {linhas.slice(0, MAX).map((l, k) => (
+              <tr key={k}>{l.map((v, i) => <td key={i} className={typeof v === "number" ? "n" : undefined}>{typeof v === "number" ? fmtNum(v) : v}</td>)}</tr>
+            ))}
+          </tbody>
+        </table>
+        {linhas.length === 0 && <p className="muted small">Nenhum item nesta lista.</p>}
+        {linhas.length > MAX && <p className="muted small">Mostrando {MAX} de {fmtNum(linhas.length)}. Baixe o CSV para ver todos.</p>}
+      </div>
     </div>
   );
 }
