@@ -21,15 +21,76 @@ export interface ArquivoLido {
   etag: string | null;
   nome: string;
   atualizadoEm: string | null;
-  fonte: "blob" | "local";
+  fonte: "github" | "blob" | "local";
 }
 
+/* ------------------------------------------------------------------ GitHub */
+
 /**
- * Lê o primeiro arquivo existente entre `nomes` do Vercel Blob (store privado ou público).
- * Sem acesso ao Blob, cai em data/<nome> para desenvolvimento local.
+ * Planilhas no repositório PRIVADO de armazenamento, onde o robô as publica (GITHUB_STORAGE_REPO + GITHUB_STORAGE_TOKEN,
+ * token só de leitura). Ler do GitHub não gasta a cota de operações do Vercel Blob.
+ */
+const github = () => {
+  const repo = process.env.GITHUB_STORAGE_REPO, token = process.env.GITHUB_STORAGE_TOKEN;
+  return repo && token
+    ? { repo, token, branch: process.env.GITHUB_STORAGE_BRANCH || "main", api: process.env.GITHUB_API_URL || "https://api.github.com" }
+    : null;
+};
+
+async function githubConteudo(nome: string, ifNoneMatch?: string | null): Promise<Response> {
+  const g = github()!;
+  return fetch(`${g.api}/repos/${g.repo}/contents/${encodeURIComponent(nome)}?ref=${encodeURIComponent(g.branch)}`, {
+    headers: {
+      Authorization: `Bearer ${g.token}`,
+      Accept: "application/vnd.github.raw", // conteúdo direto (aceita arquivos de até 100 MB)
+      "X-GitHub-Api-Version": "2022-11-28",
+      ...(ifNoneMatch ? { "If-None-Match": ifNoneMatch } : {}), // resposta 304 não conta no limite de chamadas
+    },
+    cache: "no-store",
+  });
+}
+
+// atualizado.json: hora em que o robô enviou cada planilha
+let cacheMeta: { etag: string; meta: Record<string, { atualizadoEm?: string }> } | null = null;
+async function horaDoEnvio(nome: string): Promise<string | null> {
+  try {
+    const r = await githubConteudo("atualizado.json", cacheMeta?.etag);
+    if (r.ok) cacheMeta = { etag: r.headers.get("etag") ?? "", meta: await r.json() };
+    return cacheMeta?.meta[nome]?.atualizadoEm ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/** null = GitHub não configurado ou sem nenhum dos arquivos (aí segue para o Blob). */
+async function lerDoGithub(nomes: string[], ifNoneMatch?: string | null): Promise<ArquivoLido | null> {
+  if (!github()) return null;
+  for (const nome of nomes) {
+    try {
+      const r = await githubConteudo(nome, ifNoneMatch);
+      if (r.status === 404) continue;
+      if (r.status === 304) return { buf: null, etag: ifNoneMatch ?? null, nome, atualizadoEm: await horaDoEnvio(nome), fonte: "github" };
+      if (!r.ok) throw new Error(`GitHub respondeu ${r.status}`);
+      const buf = Buffer.from(await r.arrayBuffer());
+      return { buf, etag: r.headers.get("etag"), nome, atualizadoEm: await horaDoEnvio(nome), fonte: "github" };
+    } catch (e) {
+      console.error(`Falha ao ler ${nome} do GitHub; tentando o Blob.`, e);
+      return null;
+    }
+  }
+  return null;
+}
+
+/* ------------------------------------------------------------------ leitura */
+
+/**
+ * Lê o primeiro arquivo existente entre `nomes`: primeiro do repositório de armazenamento no GitHub (se configurado),
+ * depois do Vercel Blob (store privado ou público). Sem nenhum dos dois, cai em data/<nome> para desenvolvimento local.
  * Com `ifNoneMatch`, evita baixar de novo um arquivo que não mudou.
  */
 export async function lerArquivo(nomes: string[], ifNoneMatch?: string | null): Promise<ArquivoLido> {
+  const doGithub = await lerDoGithub(nomes, ifNoneMatch);
+  if (doGithub) return doGithub;
   // Com o store conectado por OIDC não há token fixo: o SDK usa BLOB_STORE_ID + VERCEL_OIDC_TOKEN sozinho.
   const token = acharToken();
   if (token || process.env.BLOB_STORE_ID) {
