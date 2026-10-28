@@ -3,7 +3,7 @@ import * as XLSX from "xlsx";
 /** Dados compactos das linhas de pedido (RM), em vetores paralelos para reduzir o tamanho do JSON. */
 export interface RmDados {
   atualizadoEm: string | null;
-  fonte: "blob" | "local";
+  fonte: "github" | "blob" | "local";
   arquivo: string;
   colunas: string[]; // cabeçalhos encontrados (para diagnóstico)
   faltando: string[]; // colunas obrigatórias que não foram achadas

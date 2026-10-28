@@ -30,7 +30,7 @@ export interface PosicaoVazia { dep: string; area: string; end: string }
 export interface Dados {
   vazias: PosicaoVazia[]; // endereços vazios do WMS, por paiol e área
   atualizadoEm: string | null; // quando a planilha foi enviada
-  fonte: "blob" | "local";
+  fonte: "github" | "blob" | "local";
   linhas: Linha[]; // somente depósitos que entram no controle (estoque + recebimento) e fora
   produtos: Record<string, Produto>;
   escopos: Record<string, Escopo>;
