@@ -41,12 +41,16 @@ const github = () => {
     : null;
 };
 
-async function githubConteudo(nome: string, ifNoneMatch?: string | null): Promise<Response> {
+/** Pastas onde o robô pode guardar as planilhas, além da raiz (GITHUB_STORAGE_PASTAS para mudar). */
+const pastas = () => (process.env.GITHUB_STORAGE_PASTAS ?? "dados_wms,dados_singra").split(",").map((p) => p.trim().replace(/^\/+|\/+$/g, "")).filter(Boolean);
+const caminhoUrl = (caminho: string) => caminho.split("/").map(encodeURIComponent).join("/");
+
+async function githubApi(rota: string, accept: string, ifNoneMatch?: string | null): Promise<Response> {
   const g = github()!;
-  return fetch(`${g.api}/repos/${g.repo}/contents/${encodeURIComponent(nome)}?ref=${encodeURIComponent(g.branch)}`, {
+  return fetch(`${g.api}/repos/${g.repo}${rota}`, {
     headers: {
       Authorization: `Bearer ${g.token}`,
-      Accept: "application/vnd.github.raw", // conteúdo direto (aceita arquivos de até 100 MB)
+      Accept: accept,
       "X-GitHub-Api-Version": "2022-11-28",
       "User-Agent": "controle-estoque",
       ...(ifNoneMatch ? { "If-None-Match": ifNoneMatch } : {}), // resposta 304 não conta no limite de chamadas
@@ -55,13 +59,44 @@ async function githubConteudo(nome: string, ifNoneMatch?: string | null): Promis
   });
 }
 
-// atualizado.json: hora em que o robô enviou cada planilha
+const conteudo = (caminho: string, accept: string, ifNoneMatch?: string | null) =>
+  githubApi(`/contents/${caminhoUrl(caminho)}?ref=${encodeURIComponent(github()!.branch)}`, accept, ifNoneMatch);
+
+// onde cada planilha foi achada (raiz ou uma das pastas), para não procurar de novo a cada leitura
+const caminhoAchado = new Map<string, string>();
+
+/** Procura `nome` na raiz e nas pastas; devolve a resposta do primeiro caminho que existir. */
+async function acharNoGithub(nome: string, accept: string, ifNoneMatch?: string | null): Promise<{ r: Response; caminho: string } | null> {
+  const conhecido = caminhoAchado.get(nome);
+  const candidatos = conhecido ? [conhecido, ...[nome, ...pastas().map((p) => `${p}/${nome}`)].filter((c) => c !== conhecido)] : [nome, ...pastas().map((p) => `${p}/${nome}`)];
+  for (const caminho of candidatos) {
+    const r = await conteudo(caminho, accept, ifNoneMatch);
+    if (r.status === 404) continue;
+    caminhoAchado.set(nome, caminho);
+    return { r, caminho };
+  }
+  caminhoAchado.delete(nome);
+  return null;
+}
+
+// Hora do envio: atualizado.json do robô, se existir; senão, a data do último commit que mexeu no arquivo
 let cacheMeta: { etag: string; meta: Record<string, { atualizadoEm?: string }> } | null = null;
-async function horaDoEnvio(nome: string): Promise<string | null> {
+const cacheCommit = new Map<string, { etag: string; data: string | null }>();
+async function horaDoEnvio(nome: string, caminho: string): Promise<string | null> {
   try {
-    const r = await githubConteudo("atualizado.json", cacheMeta?.etag);
+    const r = await conteudo("atualizado.json", "application/vnd.github.raw", cacheMeta?.etag);
     if (r.ok) cacheMeta = { etag: r.headers.get("etag") ?? "", meta: await r.json() };
-    return cacheMeta?.meta[nome]?.atualizadoEm ?? null;
+    else if (r.status === 404) cacheMeta = null;
+    const doMeta = cacheMeta?.meta[nome]?.atualizadoEm;
+    if (doMeta) return doMeta;
+    const anterior = cacheCommit.get(caminho);
+    const c = await githubApi(`/commits?path=${encodeURIComponent(caminho)}&sha=${encodeURIComponent(github()!.branch)}&per_page=1`, "application/vnd.github+json", anterior?.etag);
+    if (c.status === 304 && anterior) return anterior.data;
+    if (!c.ok) return null;
+    const lista = (await c.json()) as { commit?: { committer?: { date?: string } } }[];
+    const data = lista[0]?.commit?.committer?.date ?? null;
+    cacheCommit.set(caminho, { etag: c.headers.get("etag") ?? "", data });
+    return data;
   } catch {
     return null;
   }
@@ -70,14 +105,49 @@ async function horaDoEnvio(nome: string): Promise<string | null> {
 async function lerDoGithub(nomes: string[], ifNoneMatch?: string | null): Promise<ArquivoLido> {
   const g = github()!;
   for (const nome of nomes) {
-    const r = await githubConteudo(nome, ifNoneMatch);
-    if (r.status === 404) continue;
-    if (r.status === 304) return { buf: null, etag: ifNoneMatch ?? null, nome, atualizadoEm: await horaDoEnvio(nome), fonte: "github" };
-    if (!r.ok) throw new Error(`Não consegui ler ${nome} do repositório ${g.repo} no GitHub (resposta ${r.status}). Confira o GITHUB_STORAGE_TOKEN na Vercel.`);
+    const achado = await acharNoGithub(nome, "application/vnd.github.raw", ifNoneMatch); // conteúdo direto, até 100 MB
+    if (!achado) continue;
+    const { r, caminho } = achado;
+    if (r.status === 304) return { buf: null, etag: ifNoneMatch ?? null, nome, atualizadoEm: await horaDoEnvio(nome, caminho), fonte: "github" };
+    if (!r.ok) throw new Error(`Não consegui ler ${caminho} do repositório ${g.repo} no GitHub (resposta ${r.status}). Confira o token do GitHub na Vercel.`);
     const buf = Buffer.from(await r.arrayBuffer());
-    return { buf, etag: r.headers.get("etag"), nome, atualizadoEm: await horaDoEnvio(nome), fonte: "github" };
+    return { buf, etag: r.headers.get("etag"), nome, atualizadoEm: await horaDoEnvio(nome, caminho), fonte: "github" };
   }
-  throw new Error(`${nomes.map((n) => `"${n}"`).join(" ou ")} não está no repositório ${g.repo} (branch ${g.branch}). Confira se o robô já enviou a planilha.`);
+  throw new Error(`${nomes.map((n) => `"${n}"`).join(" ou ")} não está no repositório ${g.repo} (branch ${g.branch}, na raiz nem em ${pastas().join(", ")}). Confira se o robô já enviou a planilha.`);
+}
+
+export interface DiagnosticoPlanilha {
+  arquivo: string;
+  achado: boolean;
+  caminho: string | null;
+  bytes: number | null;
+  atualizadoEm: string | null;
+  erro: string | null;
+}
+
+/** Onde cada planilha está no GitHub, sem baixá-la (para conferir a configuração). */
+export async function diagnosticoGithub(): Promise<{ configurado: boolean; repo: string | null; branch: string | null; pastas: string[]; planilhas: DiagnosticoPlanilha[] }> {
+  const g = github();
+  if (!g) return { configurado: false, repo: null, branch: null, pastas: pastas(), planilhas: [] };
+  const planilhas: DiagnosticoPlanilha[] = [];
+  for (const nomes of [[ARQUIVO_BLOB], ARQUIVOS_RM]) {
+    let item: DiagnosticoPlanilha = { arquivo: nomes[0], achado: false, caminho: null, bytes: null, atualizadoEm: null, erro: "não encontrado" };
+    for (const nome of nomes) {
+      try {
+        const achado = await acharNoGithub(nome, "application/vnd.github.object"); // só os dados do arquivo, sem o conteúdo
+        if (!achado) continue;
+        if (!achado.r.ok) { item = { ...item, arquivo: nome, caminho: achado.caminho, erro: `GitHub respondeu ${achado.r.status}` }; break; }
+        const info = (await achado.r.json()) as { size?: number };
+        item = { arquivo: nome, achado: true, caminho: achado.caminho, bytes: info.size ?? null, atualizadoEm: await horaDoEnvio(nome, achado.caminho), erro: null };
+        break;
+      } catch (e) {
+        item = { ...item, erro: e instanceof Error ? e.message : String(e) };
+        break;
+      }
+    }
+    planilhas.push(item);
+  }
+  return { configurado: true, repo: g.repo, branch: g.branch, pastas: pastas(), planilhas };
 }
 
 /* ------------------------------------------------------------------ leitura */
