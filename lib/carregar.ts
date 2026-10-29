@@ -44,6 +44,7 @@ async function githubConteudo(nome: string, ifNoneMatch?: string | null): Promis
       Authorization: `Bearer ${g.token}`,
       Accept: "application/vnd.github.raw", // conteúdo direto (aceita arquivos de até 100 MB)
       "X-GitHub-Api-Version": "2022-11-28",
+      "User-Agent": "controle-estoque",
       ...(ifNoneMatch ? { "If-None-Match": ifNoneMatch } : {}), // resposta 304 não conta no limite de chamadas
     },
     cache: "no-store",
@@ -62,35 +63,28 @@ async function horaDoEnvio(nome: string): Promise<string | null> {
   }
 }
 
-/** null = GitHub não configurado ou sem nenhum dos arquivos (aí segue para o Blob). */
-async function lerDoGithub(nomes: string[], ifNoneMatch?: string | null): Promise<ArquivoLido | null> {
-  if (!github()) return null;
+async function lerDoGithub(nomes: string[], ifNoneMatch?: string | null): Promise<ArquivoLido> {
+  const g = github()!;
   for (const nome of nomes) {
-    try {
-      const r = await githubConteudo(nome, ifNoneMatch);
-      if (r.status === 404) continue;
-      if (r.status === 304) return { buf: null, etag: ifNoneMatch ?? null, nome, atualizadoEm: await horaDoEnvio(nome), fonte: "github" };
-      if (!r.ok) throw new Error(`GitHub respondeu ${r.status}`);
-      const buf = Buffer.from(await r.arrayBuffer());
-      return { buf, etag: r.headers.get("etag"), nome, atualizadoEm: await horaDoEnvio(nome), fonte: "github" };
-    } catch (e) {
-      console.error(`Falha ao ler ${nome} do GitHub; tentando o Blob.`, e);
-      return null;
-    }
+    const r = await githubConteudo(nome, ifNoneMatch);
+    if (r.status === 404) continue;
+    if (r.status === 304) return { buf: null, etag: ifNoneMatch ?? null, nome, atualizadoEm: await horaDoEnvio(nome), fonte: "github" };
+    if (!r.ok) throw new Error(`Não consegui ler ${nome} do repositório ${g.repo} no GitHub (resposta ${r.status}). Confira o GITHUB_STORAGE_TOKEN na Vercel.`);
+    const buf = Buffer.from(await r.arrayBuffer());
+    return { buf, etag: r.headers.get("etag"), nome, atualizadoEm: await horaDoEnvio(nome), fonte: "github" };
   }
-  return null;
+  throw new Error(`${nomes.map((n) => `"${n}"`).join(" ou ")} não está no repositório ${g.repo} (branch ${g.branch}). Confira se o robô já enviou a planilha.`);
 }
 
 /* ------------------------------------------------------------------ leitura */
 
 /**
- * Lê o primeiro arquivo existente entre `nomes`: primeiro do repositório de armazenamento no GitHub (se configurado),
- * depois do Vercel Blob (store privado ou público). Sem nenhum dos dois, cai em data/<nome> para desenvolvimento local.
- * Com `ifNoneMatch`, evita baixar de novo um arquivo que não mudou.
+ * Lê o primeiro arquivo existente entre `nomes`. Com o repositório de armazenamento configurado, as planilhas vêm SÓ
+ * do GitHub (o Blob fica para os JSONs); sem ele, do Vercel Blob (store privado ou público) e, sem Blob, de
+ * data/<nome> para desenvolvimento local. Com `ifNoneMatch`, evita baixar de novo um arquivo que não mudou.
  */
 export async function lerArquivo(nomes: string[], ifNoneMatch?: string | null): Promise<ArquivoLido> {
-  const doGithub = await lerDoGithub(nomes, ifNoneMatch);
-  if (doGithub) return doGithub;
+  if (github()) return lerDoGithub(nomes, ifNoneMatch);
   // Com o store conectado por OIDC não há token fixo: o SDK usa BLOB_STORE_ID + VERCEL_OIDC_TOKEN sozinho.
   const token = acharToken();
   if (token || process.env.BLOB_STORE_ID) {
