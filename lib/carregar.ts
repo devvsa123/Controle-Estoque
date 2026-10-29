@@ -31,9 +31,13 @@ export interface ArquivoLido {
  * token só de leitura). Ler do GitHub não gasta a cota de operações do Vercel Blob.
  */
 const github = () => {
-  const repo = process.env.GITHUB_STORAGE_REPO, token = process.env.GITHUB_STORAGE_TOKEN;
+  const e = process.env;
+  // aceita também GITHUB_OWNER + GITHUB_REPO / GITHUB_TOKEN, e o endereço completo do repositório
+  const bruto = e.GITHUB_STORAGE_REPO || (e.GITHUB_REPO?.includes("/") ? e.GITHUB_REPO : e.GITHUB_OWNER && e.GITHUB_REPO ? `${e.GITHUB_OWNER}/${e.GITHUB_REPO}` : "");
+  const repo = bruto.trim().replace(/^https?:\/\/github\.com\//i, "").replace(/\.git$/i, "").replace(/\/+$/, "");
+  const token = (e.GITHUB_STORAGE_TOKEN || e.GITHUB_TOKEN || "").trim();
   return repo && token
-    ? { repo, token, branch: process.env.GITHUB_STORAGE_BRANCH || "main", api: process.env.GITHUB_API_URL || "https://api.github.com" }
+    ? { repo, token, branch: e.GITHUB_STORAGE_BRANCH || e.GITHUB_BRANCH || "main", api: e.GITHUB_API_URL || "https://api.github.com" }
     : null;
 };
 
