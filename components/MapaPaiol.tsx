@@ -2,14 +2,14 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NOME_DEPOSITO } from "@/lib/config";
-import type { Missao, Parametros } from "@/lib/missoes";
+import { PARAMS_PADRAO_MISSOES, type Missao, type Parametros } from "@/lib/missoes";
 import { CALCADOS_PRIMEIRA_PALAVRA } from "@/lib/config";
 import type { Dados } from "@/lib/types";
 import type { RmDados } from "@/lib/rm";
 import { COR_OUTROS, PALETA, coresDosGrupos, grupoDaFamilia, tintaSobre, type Classificacao } from "@/lib/grupos";
 import { FAIXAS_COBERTURA, NOME_CLASSE, calcularGiro, diaParaData, faixaCobertura, type ClasseGiro, type FaixaCobertura, type Giro, type GiroPi } from "@/lib/giro";
 import { csv, fmtNum } from "@/lib/util";
-import { Carga } from "./Missoes";
+import { useMissoesOpcional } from "./Missoes";
 import { ClassificacaoGrupos } from "./ClassificacaoGrupos";
 
 /* --------------------------------------------------------------------------- modelo */
@@ -68,7 +68,25 @@ function montarSlots(d: Dados) {
 
 export function MapaPaiol({ estoque }: { estoque: Dados | null }) {
   if (!estoque) return <p className="muted">Carregando a planilha de estoque…</p>;
-  return <Carga>{(d) => <MapaComAbas estoque={estoque} missoes={d.missoes} params={d.params} />}</Carga>;
+  return <MapaComMissoes estoque={estoque} />;
+}
+
+/** O mapa é desenhado com o estoque mesmo sem as missões; elas só acrescentam as setas e o detalhe das movimentações. */
+function MapaComMissoes({ estoque }: { estoque: Dados }) {
+  const { dados, erro, carregando, iniciar, recarregar } = useMissoesOpcional();
+  useEffect(() => iniciar(), [iniciar]);
+  return (
+    <>
+      {erro && (
+        <div className="note" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+          <span>Missões indisponíveis: {erro} O mapa mostra o estoque, sem as setas das missões.</span>
+          <button className="btn" onClick={recarregar}>Tentar novamente</button>
+        </div>
+      )}
+      {!dados && !erro && carregando && <p className="muted small">Carregando as missões… o mapa já mostra o estoque.</p>}
+      <MapaComAbas estoque={estoque} missoes={dados?.missoes ?? []} params={dados?.params ?? PARAMS_PADRAO_MISSOES} />
+    </>
+  );
 }
 
 type Visao = "situacao" | "grupos" | "giro" | "cobertura";

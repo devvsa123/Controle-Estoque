@@ -30,7 +30,7 @@ export interface ArquivoLido {
  * Planilhas no repositório PRIVADO de armazenamento, onde o robô as publica (GITHUB_STORAGE_REPO + GITHUB_STORAGE_TOKEN,
  * token só de leitura). Ler do GitHub não gasta a cota de operações do Vercel Blob.
  */
-const github = () => {
+export const github = () => {
   const e = process.env;
   // aceita também GITHUB_OWNER + GITHUB_REPO / GITHUB_TOKEN, e o endereço completo do repositório
   const bruto = e.GITHUB_STORAGE_REPO || (e.GITHUB_REPO?.includes("/") ? e.GITHUB_REPO : e.GITHUB_OWNER && e.GITHUB_REPO ? `${e.GITHUB_OWNER}/${e.GITHUB_REPO}` : "");
@@ -43,12 +43,14 @@ const github = () => {
 
 /** Pastas onde o robô pode guardar as planilhas, além da raiz (GITHUB_STORAGE_PASTAS para mudar). */
 const pastas = () => (process.env.GITHUB_STORAGE_PASTAS ?? "dados_wms,dados_singra").split(",").map((p) => p.trim().replace(/^\/+|\/+$/g, "")).filter(Boolean);
-const caminhoUrl = (caminho: string) => caminho.split("/").map(encodeURIComponent).join("/");
+export const caminhoUrl = (caminho: string) => caminho.split("/").map(encodeURIComponent).join("/");
 
-async function githubApi(rota: string, accept: string, ifNoneMatch?: string | null): Promise<Response> {
+export async function githubApi(rota: string, accept: string, ifNoneMatch?: string | null, envio?: { method: string; body: unknown }): Promise<Response> {
   const g = github()!;
   return fetch(`${g.api}/repos/${g.repo}${rota}`, {
+    ...(envio ? { method: envio.method, body: JSON.stringify(envio.body) } : {}),
     headers: {
+      ...(envio ? { "Content-Type": "application/json" } : {}),
       Authorization: `Bearer ${g.token}`,
       Accept: accept,
       "X-GitHub-Api-Version": "2022-11-28",
