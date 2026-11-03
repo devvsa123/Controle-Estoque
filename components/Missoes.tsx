@@ -84,6 +84,12 @@ export function MissoesProvider({ children }: { children: React.ReactNode }) {
   return <C.Provider value={{ dados, erro, carregando, iniciar, recarregar, trocar, post }}>{children}</C.Provider>;
 }
 
+/** Acesso às missões sem bloquear a tela quando elas falham (o Mapa do paiol desenha o estoque mesmo assim). */
+export function useMissoesOpcional() {
+  const { dados, erro, carregando, iniciar, recarregar } = usar();
+  return { dados, erro, carregando, iniciar, recarregar };
+}
+
 /** Contagem de alertas para o selo do menu. */
 export function useContagemAlertas(): { critico: number; atencao: number } {
   const c = useContext(C);
