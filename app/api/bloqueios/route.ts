@@ -1,3 +1,4 @@
+import { exigirSessao } from "@/lib/usuarios";
 import { jsonGzip } from "@/lib/gzip";
 import { editarRegistro, listarSincronizado } from "@/lib/bloqueiosStore";
 
@@ -5,6 +6,8 @@ export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
 export async function GET() {
+  const sessao = await exigirSessao();
+  if (sessao instanceof Response) return sessao;
   try {
     return jsonGzip(await listarSincronizado());
   } catch (e) {
@@ -13,6 +16,8 @@ export async function GET() {
 }
 
 export async function POST(req: Request) {
+  const sessao = await exigirSessao();
+  if (sessao instanceof Response) return sessao;
   try {
     const { id, campos } = await req.json();
     if (typeof id !== "string" || !id || typeof campos !== "object" || campos === null) throw new Error("Pedido inválido");
