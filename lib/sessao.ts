@@ -16,6 +16,7 @@ export interface Sessao {
   n: string; // nome
   p: Papel;
   v: number; // versão da senha: muda ao redefinir, o que derruba sessões antigas
+  t?: boolean; // troca de senha pendente: só a tela de trocar senha fica liberada
   exp: number; // segundos desde 1970
 }
 
