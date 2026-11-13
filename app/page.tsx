@@ -162,10 +162,31 @@ export default function Page() {
   );
 }
 
+/** Identifica uma linha (palete/ID numa LOC) mesmo trocando de filtro ou de escopo. */
+const chaveLinha = (l: Linha) => `${l.dep}|${l.end}|${l.id}|${l.pi}|${l.lote}`;
+
+/** Gera um .xlsx com as posições (a biblioteca só é baixada quando alguém exporta). */
+async function exportarExcel(linhas: Linha[], dados: Dados, nome: string) {
+  const XLSX = await import("xlsx");
+  const cab = ["Depósito", "Área", "Endereço", "PI", "Descrição", "Disponível", "Total", "Status", "Motivo", "Fornecedor", "Lote", "Fabricação", "Validade", "ID_QUANT"];
+  const corpo = linhas.map((l) => [l.dep, l.area, l.end, l.pi, dados.produtos[l.pi]?.desc ?? "", l.disp, l.total, l.livre ? "LIVRE" : "BLOQUEADO", l.motivo, l.forn, l.lote, fmtData(l.fab), fmtData(l.val), l.id]);
+  const ws = XLSX.utils.aoa_to_sheet([cab, ...corpo]);
+  ws["!cols"] = [6, 5, 16, 12, 50, 11, 11, 11, 18, 18, 14, 11, 11, 14].map((wch) => ({ wch }));
+  ws["!autofilter"] = { ref: `A1:N${corpo.length + 1}` };
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Posições");
+  XLSX.writeFile(wb, `${nome}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
 function EstoqueView({ dados, erro, carregando, carregar }: { dados: Dados | null; erro: string | null; carregando: boolean; carregar: () => void }) {
   const [escopo, setEscopo] = useState<Escopo>("estoque");
   const [aba, setAba] = useState<Aba>("resumo");
   const [f, setF] = useState<Filtros>(FILTROS_INICIAIS);
+  // posições marcadas: continuam marcadas ao trocar de busca, filtro ou escopo
+  const [sel, setSel] = useState<Set<string>>(() => new Set());
+  const [soSel, setSoSel] = useState(false);
+  const selecionadas = useMemo(() => (dados && sel.size ? dados.linhas.filter((l) => sel.has(chaveLinha(l))) : []), [dados, sel]);
+  useEffect(() => { if (!sel.size) setSoSel(false); }, [sel]);
 
   const hoje = useMemo(() => new Date(), []);
 
@@ -256,7 +277,8 @@ function EstoqueView({ dados, erro, carregando, carregar }: { dados: Dados | nul
           {dados.fonte === "local" ? " (arquivo local)" : ""} ·{" "}
           <button className="btn" onClick={carregar} disabled={carregando}>
             {carregando ? "Atualizando…" : "Recarregar"}
-          </button>
+          </button>{" "}
+          <a className="btn" href="/api/estoque/planilha" style={{ color: "inherit", textDecoration: "none" }} title="A planilha controle-estoque.xlsx inteira, como o robô enviou">Baixar planilha completa</a>
         </span>
       </header>
 
@@ -348,9 +370,19 @@ function EstoqueView({ dados, erro, carregando, carregar }: { dados: Dados | nul
         </div>
       </section>
 
+      {sel.size > 0 && (
+        <div className="note" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", background: "var(--brand-soft)", color: "var(--brand)" }}>
+          <strong>{fmtNum(sel.size)} {sel.size === 1 ? "posição selecionada" : "posições selecionadas"}</strong>
+          <span>· {fmtNum(selecionadas.reduce((t, l) => t + l.disp, 0))} unidades</span>
+          <button className="btn small" onClick={() => { setSoSel(!soSel); setAba("posicoes"); }}>{soSel ? "Voltar à busca" : "Ver só as selecionadas"}</button>
+          <button className="btn small" onClick={() => exportarExcel(selecionadas, dados, "posicoes-selecionadas")}>Exportar selecionadas (Excel)</button>
+          <button className="btn small" onClick={() => setSel(new Set())}>Limpar seleção</button>
+        </div>
+      )}
+
       {aba === "resumo" && <Resumo linhas={filtradas} dados={dados} hoje={hoje} escopo={escopo} />}
       {aba === "produtos" && <Produtos linhas={filtradas} dados={dados} />}
-      {aba === "posicoes" && <Posicoes linhas={filtradas} dados={dados} />}
+      {aba === "posicoes" && <Posicoes linhas={soSel ? selecionadas : filtradas} dados={dados} sel={sel} setSel={setSel} soSel={soSel} />}
     </div>
   );
 }
@@ -755,7 +787,14 @@ function PiVariante({ it, aberto, onToggle }: { it: ItemPi; aberto: boolean; onT
 
 type ColSort = "dep" | "end" | "pi" | "desc" | "disp" | "val";
 
-function Posicoes({ linhas, dados }: { linhas: Linha[]; dados: Dados }) {
+function Posicoes({ linhas, dados, sel, setSel, soSel }: {
+  linhas: Linha[]; dados: Dados; sel: Set<string>; setSel: (f: (s: Set<string>) => Set<string>) => void; soSel: boolean;
+}) {
+  const marcar = (ls: Linha[], marcado: boolean) => setSel((s) => {
+    const n = new Set(s);
+    for (const l of ls) { if (marcado) n.add(chaveLinha(l)); else n.delete(chaveLinha(l)); }
+    return n;
+  });
   const [sort, setSort] = useState<{ col: ColSort; asc: boolean }>({ col: "dep", asc: true });
   const [pag, setPag] = useState(0);
   useEffect(() => setPag(0), [linhas, sort]);
@@ -797,23 +836,40 @@ function Posicoes({ linhas, dados }: { linhas: Linha[]; dados: Dados }) {
     URL.revokeObjectURL(a.href);
   }
 
+  const paginaMarcada = pagina.length > 0 && pagina.every((l) => sel.has(chaveLinha(l)));
+  const todasMarcadas = linhas.length > 0 && linhas.every((l) => sel.has(chaveLinha(l)));
+
   return (
     <div className="card">
       <div className="bar" style={{ justifyContent: "space-between" }}>
-        <span className="muted small">{fmtNum(linhas.length)} posições · {fmtNum(linhas.reduce((s, l) => s + l.disp, 0))} unidades (livres + bloqueadas)</span>
-        <button className="btn" onClick={exportar} disabled={!linhas.length}>Exportar CSV</button>
+        <span className="muted small">
+          {soSel ? "Mostrando só as selecionadas · " : ""}{fmtNum(linhas.length)} posições · {fmtNum(linhas.reduce((s, l) => s + l.disp, 0))} unidades (livres + bloqueadas)
+        </span>
+        <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {!soSel && (
+            <button className="btn" onClick={() => marcar(linhas, !todasMarcadas)} disabled={!linhas.length} title="Marca (ou desmarca) todas as posições que a busca e os filtros mostram, em todas as páginas">
+              {todasMarcadas ? "Desmarcar" : "Selecionar"} as {fmtNum(linhas.length)} da busca
+            </button>
+          )}
+          <button className="btn" onClick={() => exportarExcel(linhas, dados, soSel ? "posicoes-selecionadas" : "posicoes-estoque")} disabled={!linhas.length}>Exportar estas (Excel)</button>
+          <button className="btn" onClick={exportar} disabled={!linhas.length}>CSV</button>
+        </span>
       </div>
       <div className="tablewrap">
         <table>
           <thead>
             <tr>
+              <th style={{ width: 28 }}><input type="checkbox" checked={paginaMarcada} onChange={() => marcar(pagina, !paginaMarcada)} aria-label="Marcar as posições desta página" title="Marcar as posições desta página" /></th>
               {th("dep", "Dep.")}<th>Área</th>{th("end", "Endereço")}{th("pi", "PI")}{th("desc", "Descrição")}
               {th("disp", "Disponível", true)}<th>Status</th><th>Lote</th>{th("val", "Validade")}<th>ID</th>
             </tr>
           </thead>
           <tbody>
-            {pagina.map((l) => (
-              <tr key={l.id + l.dep + l.end}>
+            {pagina.map((l) => {
+              const marcada = sel.has(chaveLinha(l));
+              return (
+              <tr key={l.id + l.dep + l.end} style={marcada ? { background: "var(--brand-soft)" } : undefined} onClick={(e) => { if (!(e.target as HTMLElement).closest("input,button,a")) marcar([l], !marcada); }}>
+                <td><input type="checkbox" checked={marcada} onChange={() => marcar([l], !marcada)} aria-label={`Marcar ${l.end} ${l.pi}`} /></td>
                 <td title={NOME_DEPOSITO[l.dep]}>{l.dep}</td>
                 <td title={NOME_AREA[l.area]}>{l.area}</td>
                 <td>{l.end}</td>
@@ -825,7 +881,8 @@ function Posicoes({ linhas, dados }: { linhas: Linha[]; dados: Dados }) {
                 <td><ValidadeTag val={l.val} /></td>
                 <td className="muted">{l.id}</td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
       </div>
