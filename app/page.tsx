@@ -185,6 +185,10 @@ function EstoqueView({ dados, erro, carregando, carregar }: { dados: Dados | nul
   // posições marcadas: continuam marcadas ao trocar de busca, filtro ou escopo
   const [sel, setSel] = useState<Set<string>>(() => new Set());
   const [soSel, setSoSel] = useState(false);
+  // itens (PIs) marcados na aba Resumo, do mesmo jeito
+  const [selPis, setSelPis] = useState<Set<string>>(() => new Set());
+  const [soSelPis, setSoSelPis] = useState(false);
+  useEffect(() => { if (!selPis.size) setSoSelPis(false); }, [selPis]);
   const selecionadas = useMemo(() => (dados && sel.size ? dados.linhas.filter((l) => sel.has(chaveLinha(l))) : []), [dados, sel]);
   useEffect(() => { if (!sel.size) setSoSel(false); }, [sel]);
 
@@ -217,9 +221,11 @@ function EstoqueView({ dados, erro, carregando, carregar }: { dados: Dados | nul
     return m;
   }, [dados]);
 
-  const filtradas = useMemo(() => {
+  // `semBusca`: só os filtros (depósito, área, status...). A busca por texto serve para achar o item; os totais
+  // por item na aba Resumo são calculados sobre `semBusca`, para mostrar o item inteiro.
+  const [filtradas, semBusca] = useMemo(() => {
     const toks = norm(f.q).split(/\s+/).filter(Boolean);
-    return doEscopo.filter((l) => {
+    const base = doEscopo.filter((l) => {
       if (f.deps.length && !f.deps.includes(l.dep)) return false;
       if (f.area && l.area !== f.area) return false;
       if (f.status === "livre" && !l.livre) return false;
@@ -235,12 +241,15 @@ function EstoqueView({ dados, erro, carregando, carregar }: { dados: Dados | nul
           if (f.validade === "90" && (d < 0 || d > 90)) return false;
         }
       }
-      if (toks.length) {
-        const h = hay.get(l) ?? "";
-        for (const t of toks) if (!h.includes(t)) return false;
-      }
       return true;
     });
+    if (!toks.length) return [base, base];
+    const comBusca = base.filter((l) => {
+      const h = hay.get(l) ?? "";
+      for (const t of toks) if (!h.includes(t)) return false;
+      return true;
+    });
+    return [comBusca, base];
   }, [doEscopo, f, hay, hoje]);
 
   const set = <K extends keyof Filtros>(k: K, v: Filtros[K]) => setF((o) => ({ ...o, [k]: v }));
@@ -380,7 +389,14 @@ function EstoqueView({ dados, erro, carregando, carregar }: { dados: Dados | nul
         </div>
       )}
 
-      {aba === "resumo" && <Resumo linhas={filtradas} dados={dados} hoje={hoje} escopo={escopo} />}
+      {aba === "resumo" && (
+        <>
+          <TotalPorItem linhas={filtradas} base={semBusca} dados={dados} sel={selPis} setSel={setSelPis} soSel={soSelPis} setSoSel={setSoSelPis}
+            descricaoFiltros={descreverFiltros(escopo, f)} />
+          <div style={{ height: 12 }} />
+          <Resumo linhas={filtradas} dados={dados} hoje={hoje} escopo={escopo} />
+        </>
+      )}
       {aba === "produtos" && <Produtos linhas={filtradas} dados={dados} />}
       {aba === "posicoes" && <Posicoes linhas={soSel ? selecionadas : filtradas} dados={dados} sel={sel} setSel={setSel} soSel={soSel} />}
     </div>
@@ -394,6 +410,144 @@ function Kpi({ v, l, tone }: { v: string; l: string; tone?: "ok" | "bad" | "warn
     <div className={`card kpi ${tone ?? ""}`}>
       <div className="v">{v}</div>
       <div className="l">{l}</div>
+    </div>
+  );
+}
+
+/* ---------------------------------------------------------------- Total por item (Resumo) */
+
+interface TotalItem { pi: string; livre: number; bloq: number; porDep: Record<string, number> }
+
+/** Soma por PI: disponível (livre), bloqueado e o disponível de cada depósito. */
+function totaisPorItem(linhas: Linha[]): Map<string, TotalItem> {
+  const m = new Map<string, TotalItem>();
+  for (const l of linhas) {
+    const t = m.get(l.pi) ?? m.set(l.pi, { pi: l.pi, livre: 0, bloq: 0, porDep: {} }).get(l.pi)!;
+    if (l.livre) { t.livre += l.disp; if (l.disp) t.porDep[l.dep] = (t.porDep[l.dep] ?? 0) + l.disp; }
+    else t.bloq += l.disp;
+  }
+  return m;
+}
+
+function descreverFiltros(escopo: Escopo, f: Filtros): string {
+  const partes = [ESCOPOS.find((e) => e.id === escopo)?.nome ?? escopo];
+  if (f.deps.length) partes.push(`depósitos ${f.deps.join(", ")}`);
+  if (f.area) partes.push(`área ${f.area}`);
+  if (f.status !== "todos") partes.push(f.status === "livre" ? "somente livre" : "somente bloqueado");
+  if (f.motivo) partes.push(`motivo ${f.motivo}`);
+  if (f.validade !== "todas") partes.push({ vencido: "vencidos", "90": "vencem em até 90 dias", sem: "sem validade" }[f.validade] ?? "");
+  return partes.join(" · ");
+}
+
+async function exportarItensExcel(itens: TotalItem[], dados: Dados, nome: string, filtros: string) {
+  const XLSX = await import("xlsx");
+  const deps = [...new Set(itens.flatMap((t) => Object.keys(t.porDep)))].sort();
+  const cab = ["PI", "Descrição", "Família", "Disponível (livre)", "Bloqueado", "Total", ...deps.map((d) => `Disponível ${d}`)];
+  const corpo = itens.map((t) => [t.pi, dados.produtos[t.pi]?.desc ?? "", dados.produtos[t.pi]?.familia ?? "", t.livre, t.bloq, t.livre + t.bloq, ...deps.map((d) => t.porDep[d] ?? 0)]);
+  const ws = XLSX.utils.aoa_to_sheet([cab, ...corpo]);
+  ws["!cols"] = [12, 50, 40, 16, 12, 12, ...deps.map(() => 14)].map((wch) => ({ wch }));
+  ws["!autofilter"] = { ref: XLSX.utils.encode_range({ s: { r: 0, c: 0 }, e: { r: corpo.length, c: cab.length - 1 } }) };
+  const info = XLSX.utils.aoa_to_sheet([
+    ["Planilha de estoque de", fmtDataHora(dados.atualizadoEm)],
+    ["Exportado em", new Date().toLocaleString("pt-BR")],
+    ["Filtros", filtros],
+    ["Itens", itens.length],
+    ["Observação", "Disponível = saldo LIVRE. Bloqueado = saldo com algum bloqueio (não pode ser fornecido)."],
+  ]);
+  info["!cols"] = [{ wch: 24 }, { wch: 80 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Total por item");
+  XLSX.utils.book_append_sheet(wb, info, "Informações");
+  XLSX.writeFile(wb, `${nome}-${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+
+function TotalPorItem({ linhas, base, dados, sel, setSel, soSel, setSoSel, descricaoFiltros }: {
+  linhas: Linha[]; base: Linha[]; dados: Dados; sel: Set<string>; setSel: (f: (s: Set<string>) => Set<string>) => void;
+  soSel: boolean; setSoSel: (v: boolean) => void; descricaoFiltros: string;
+}) {
+  const [pag, setPag] = useState(0);
+  const totais = useMemo(() => totaisPorItem(base), [base]);
+  const ordenar = (pis: Iterable<string>) => [...pis]
+    .map((pi) => totais.get(pi) ?? { pi, livre: 0, bloq: 0, porDep: {} })
+    .sort((a, b) => (dados.produtos[a.pi]?.familia ?? a.pi).localeCompare(dados.produtos[b.pi]?.familia ?? b.pi, "pt-BR", { numeric: true })
+      || cmpVariante(dados.produtos[a.pi]?.variante ?? "", dados.produtos[b.pi]?.variante ?? "") || a.pi.localeCompare(b.pi));
+  const daBusca = useMemo(() => ordenar(new Set(linhas.map((l) => l.pi))), [linhas, totais]); // eslint-disable-line react-hooks/exhaustive-deps
+  const selecionados = useMemo(() => ordenar(sel), [sel, totais]); // eslint-disable-line react-hooks/exhaustive-deps
+  const itens = soSel ? selecionados : daBusca;
+  useEffect(() => setPag(0), [linhas, soSel]);
+
+  const pagina = itens.slice(pag * POR_PAGINA, (pag + 1) * POR_PAGINA);
+  const marcar = (pis: string[], m: boolean) => setSel((s) => { const n = new Set(s); for (const pi of pis) { if (m) n.add(pi); else n.delete(pi); } return n; });
+  const paginaMarcada = pagina.length > 0 && pagina.every((t) => sel.has(t.pi));
+  const todasMarcadas = daBusca.length > 0 && daBusca.every((t) => sel.has(t.pi));
+  const soma = (ts: TotalItem[]) => ts.reduce((x, t) => x + t.livre, 0);
+
+  return (
+    <div className="card">
+      <h2>Total por item</h2>
+      <p className="muted small" style={{ marginTop: 0 }}>
+        Quanto há de cada item, somando todas as LOCs. <strong>Disponível</strong> é o saldo livre. Os totais seguem o escopo e os filtros acima
+        ({descricaoFiltros}); a busca serve só para achar o item. Marque os itens durante as buscas e exporte só os marcados.
+      </p>
+
+      {sel.size > 0 && (
+        <div className="note" style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap", background: "var(--brand-soft)", color: "var(--brand)" }}>
+          <strong>{fmtNum(sel.size)} {sel.size === 1 ? "item selecionado" : "itens selecionados"}</strong>
+          <span>· {fmtNum(soma(selecionados))} disponíveis</span>
+          <button className="btn small" onClick={() => setSoSel(!soSel)}>{soSel ? "Voltar à busca" : "Ver só os selecionados"}</button>
+          <button className="btn small" onClick={() => exportarItensExcel(selecionados, dados, "total-por-item-selecionados", descricaoFiltros)}>Exportar selecionados (Excel)</button>
+          <button className="btn small" onClick={() => setSel(() => new Set())}>Limpar seleção</button>
+        </div>
+      )}
+
+      <div className="bar" style={{ justifyContent: "space-between" }}>
+        <span className="muted small">
+          {soSel ? "Mostrando só os selecionados · " : ""}{fmtNum(itens.length)} itens · {fmtNum(soma(itens))} unidades disponíveis
+        </span>
+        <span style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+          {!soSel && (
+            <button className="btn" onClick={() => marcar(daBusca.map((t) => t.pi), !todasMarcadas)} disabled={!daBusca.length}>
+              {todasMarcadas ? "Desmarcar" : "Selecionar"} os {fmtNum(daBusca.length)} da busca
+            </button>
+          )}
+          <button className="btn" onClick={() => exportarItensExcel(itens, dados, soSel ? "total-por-item-selecionados" : "total-por-item", descricaoFiltros)} disabled={!itens.length}>
+            Exportar estes (Excel)
+          </button>
+        </span>
+      </div>
+
+      <div className="tablewrap" style={{ maxHeight: 520 }}>
+        <table>
+          <thead>
+            <tr>
+              <th style={{ width: 28 }}><input type="checkbox" checked={paginaMarcada} onChange={() => marcar(pagina.map((t) => t.pi), !paginaMarcada)} aria-label="Marcar os itens desta página" /></th>
+              <th>PI</th><th>Descrição</th><th className="n">Disponível</th><th className="n">Bloqueado</th><th className="n">Total</th><th>Disponível por depósito</th>
+            </tr>
+          </thead>
+          <tbody>
+            {pagina.map((t) => {
+              const marcado = sel.has(t.pi);
+              return (
+                <tr key={t.pi} style={marcado ? { background: "var(--brand-soft)", cursor: "pointer" } : { cursor: "pointer" }}
+                  onClick={(e) => { if (!(e.target as HTMLElement).closest("input,button,a")) marcar([t.pi], !marcado); }}>
+                  <td><input type="checkbox" checked={marcado} onChange={() => marcar([t.pi], !marcado)} aria-label={`Marcar ${t.pi}`} /></td>
+                  <td>{t.pi}</td>
+                  <td className="wrapc">{dados.produtos[t.pi]?.desc}</td>
+                  <td className="n"><strong>{fmtNum(t.livre)}</strong></td>
+                  <td className="n">{t.bloq ? fmtNum(t.bloq) : <span className="muted">—</span>}</td>
+                  <td className="n">{fmtNum(t.livre + t.bloq)}</td>
+                  <td className="small">
+                    {Object.entries(t.porDep).sort((a, b) => a[0].localeCompare(b[0])).map(([d, q]) => (
+                      <span key={d} title={NOME_DEPOSITO[d]} style={{ marginRight: 10, whiteSpace: "nowrap" }}>{d}: {fmtNum(q)}</span>
+                    ))}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+      <Paginador total={itens.length} pag={pag} setPag={setPag} />
     </div>
   );
 }
